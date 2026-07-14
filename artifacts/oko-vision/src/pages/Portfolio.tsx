@@ -437,9 +437,11 @@ function PositionCard({ pos, totalUsd, onClose, onShare }: {
             {[
               {
                 label: "ВЛОЖЕНО",
-                value: pos.costBasisUsd != null && pos.costBasisUsd > 0
-                  ? `$${pos.costBasisUsd.toFixed(2)}`
-                  : "—",
+                value: (() => {
+                  // Fall back to entryPrice × amount if costBasisUsd not explicitly set
+                  const invested = pos.costBasisUsd ?? (pos.entryPrice > 0 ? pos.entryPrice * pos.amount : 0);
+                  return invested > 0 ? `${invested.toFixed(2)}` : "—";
+                })(),
               },
               {
                 label: "СЕЙЧАС",

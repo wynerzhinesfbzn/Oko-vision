@@ -304,9 +304,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setPositions((prev) =>
       prev.map((p) => {
         if (p.mint !== mint) return p;
-        const pnlUsd = (currentPrice - p.entryPrice) * p.amount;
+        const usdValue = currentPrice * p.amount;
+        // Use costBasisUsd when available — more accurate than entryPrice * amount
+        const costBasis = p.costBasisUsd ?? (p.entryPrice * p.amount);
+        const pnlUsd = costBasis > 0 ? usdValue - costBasis : (currentPrice - p.entryPrice) * p.amount;
         const pnlPct = p.entryPrice > 0 ? ((currentPrice - p.entryPrice) / p.entryPrice) * 100 : 0;
-        return { ...p, currentPrice, pnlUsd, pnlPct, usdValue: currentPrice * p.amount };
+        return { ...p, currentPrice, pnlUsd, pnlPct, usdValue };
       }),
     );
   }, []);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
-import { ArrowLeft, ArrowDownUp, Settings2, Shield, Zap, AlertTriangle, CheckCircle2, ChevronDown, TrendingUp } from "lucide-react";
+import { ArrowLeft, ArrowDownUp, Settings2, Shield, Zap, AlertTriangle, CheckCircle2, ChevronDown, TrendingUp, ChevronRight, Wallet, Send } from "lucide-react";
 import { getJupiterQuote, SOL_MINT, USDC_MINT, KNOWN_TOKENS, PLATFORM_FEE_BPS, toLamports, fromLamports, type JupiterQuote } from "@/lib/jupiter";
 import { useTrading, type SLTPSettings, type RiskSettings } from "@/context/TradingContext";
 import { useOkoWallet } from "@/context/WalletContext";
@@ -495,86 +495,355 @@ function RiskTab() {
   );
 }
 
+// ── Strategy definitions ───────────────────────────────────────────────────────
+interface AutoStrategy {
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;         // for beginners
+  risk: "Минимальный" | "Низкий" | "Средний" | "Высокий" | "Очень высокий";
+  riskColor: string;
+  mcapRange: string;
+  liquidityMin: string;
+  volumeSpike?: string;
+  maxPct: string;
+  dailyNet: string;
+  trailing: string;
+  priorityFee: "Низкий" | "Средний" | "Средне-высокий" | "Высокий" | "Очень высокий";
+}
+
+const STRATEGIES: AutoStrategy[] = [
+  {
+    id: "ultra-safe",
+    name: "Ultra Safe Post-Migration",
+    tagline: "Самая безопасная",
+    description: "Самая безопасная стратегия. Бот работает только с проверенными токенами после миграции. Минимальный риск.",
+    risk: "Минимальный", riskColor: "#4ADE80",
+    mcapRange: "$800k – $5M", liquidityMin: "$120k locked",
+    maxPct: "20–25%", dailyNet: "+1.5%", trailing: "−10%",
+    priorityFee: "Низкий",
+  },
+  {
+    id: "safe-migration",
+    name: "Safe Migration Hold",
+    tagline: "Очень консервативная",
+    description: "Самая спокойная стратегия. Бот покупает только уже проверенные токены после миграции. Низкий риск, стабильный рост.",
+    risk: "Низкий", riskColor: "#86EFAC",
+    mcapRange: "$450k – $1.8M", liquidityMin: "$55k",
+    maxPct: "15–20%", dailyNet: "+1.8%", trailing: "−8%",
+    priorityFee: "Низкий",
+  },
+  {
+    id: "balanced",
+    name: "Balanced Alpha Filter",
+    tagline: "Золотая середина",
+    description: "Золотая середина. Ловит хорошие токены на ранней стадии роста. Хороший баланс между риском и прибылью.",
+    risk: "Средний", riskColor: "#C9A84C",
+    mcapRange: "$170k – $380k", liquidityMin: "$28k", volumeSpike: "+260%",
+    maxPct: "12–15%", dailyNet: "+2.9%", trailing: "−6%",
+    priorityFee: "Средний",
+  },
+  {
+    id: "early-migration",
+    name: "Early Migration Alpha v6",
+    tagline: "Основная стратегия",
+    description: "Основная стратегия терминала. Ловит токены в самом начале быстрого роста. Хорошая прибыль при умеренном риске.",
+    risk: "Средний", riskColor: "#C9A84C",
+    mcapRange: "$125k – $260k", liquidityMin: "$22k", volumeSpike: "+300%",
+    maxPct: "10–12%", dailyNet: "+3.8%", trailing: "−5%",
+    priorityFee: "Средне-высокий",
+  },
+  {
+    id: "volume-spike",
+    name: "Volume Spike Sniper",
+    tagline: "Агрессивная",
+    description: "Охотник за взрывом объёма. Более агрессивная стратегия с высокой потенциальной прибылью.",
+    risk: "Высокий", riskColor: "#FB923C",
+    mcapRange: "$75k – $230k", liquidityMin: "$18k", volumeSpike: "+420%",
+    maxPct: "6–8%", dailyNet: "+4.4%", trailing: "−4%",
+    priorityFee: "Высокий",
+  },
+  {
+    id: "degen",
+    name: "Degen Launch Hunter",
+    tagline: "Ультра-рисковая",
+    description: "Самая рискованная стратегия. Пытается поймать токен в самые первые секунды. Может дать очень большую прибыль, но риск высокий.",
+    risk: "Очень высокий", riskColor: "#FF4D5E",
+    mcapRange: "$35k – $135k", liquidityMin: "$10k", volumeSpike: "+550%",
+    maxPct: "3–5%", dailyNet: "+5.5%", trailing: "−3%",
+    priorityFee: "Очень высокий",
+  },
+  {
+    id: "smart-money",
+    name: "Smart Money Follower",
+    tagline: "Следование за китами",
+    description: "Бот копирует покупки известных успешных трейдеров и китов. Средний риск, высокая вероятность успеха.",
+    risk: "Средний", riskColor: "#C9A84C",
+    mcapRange: "$150k – $600k", liquidityMin: "$30k",
+    maxPct: "8–10%", dailyNet: "+3.2%", trailing: "—",
+    priorityFee: "Высокий",
+  },
+  {
+    id: "hype",
+    name: "Hype Momentum",
+    tagline: "Хайп и социальный момент",
+    description: "Ловит токены, которые набирают сильный хайп в соцсетях. Прибыльная стратегия во время мем-трендов.",
+    risk: "Высокий", riskColor: "#FB923C",
+    mcapRange: "$80k – $350k", liquidityMin: "—",
+    maxPct: "7–9%", dailyNet: "+4.1%", trailing: "—",
+    priorityFee: "Высокий",
+  },
+  {
+    id: "dip-recovery",
+    name: "Dip Recovery Hunter",
+    tagline: "Охотник за отскоками",
+    description: "Покупает токены после сильного падения (−25–40%), когда они начинают восстанавливаться. Хорошо работает на волатильном рынке.",
+    risk: "Средний", riskColor: "#C9A84C",
+    mcapRange: "$120k – $450k", liquidityMin: "—",
+    maxPct: "9–11%", dailyNet: "+3.5%", trailing: "—",
+    priorityFee: "Высокий",
+  },
+];
+
+function Toggle({ on, onChange, disabled }: { on: boolean; onChange: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={disabled ? undefined : onChange}
+      className="w-12 h-6 rounded-full relative transition-all shrink-0"
+      style={{
+        background: on ? "rgba(201,168,76,0.25)" : "rgba(255,255,255,0.08)",
+        border: `2px solid ${on ? "rgba(201,168,76,0.55)" : "rgba(255,255,255,0.15)"}`,
+        opacity: disabled ? 0.4 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+    >
+      <div
+        className="absolute top-0.5 w-4 h-4 rounded-full transition-all"
+        style={{
+          background: on ? "#C9A84C" : "rgba(255,255,255,0.3)",
+          boxShadow: on ? "0 0 6px #C9A84C" : "none",
+          left: on ? "calc(100% - 18px)" : "2px",
+        }}
+      />
+    </button>
+  );
+}
+
 // ── Auto-Trading Tab ───────────────────────────────────────────────────────────
 function AutoTab() {
-  const { autoTrading, setAutoTrading, riskSettings, sltpSettings } = useTrading();
-  const { connected } = useOkoWallet();
+  const { autoTrading, setAutoTrading } = useTrading();
+  const { connected, address } = useOkoWallet();
+
+  const [selectedId, setSelectedId]   = useState<string>(() => localStorage.getItem("oko-auto-strategy") ?? "early-migration");
+  const [expanded,   setExpanded]     = useState<string | null>(null);
+  const [botActive,  setBotActive]    = useState(autoTrading);
+
+  // Keep local botActive in sync with context
+  useEffect(() => { setBotActive(autoTrading); }, [autoTrading]);
+
+  const activateBot = (on: boolean) => {
+    if (!connected) return;
+    setBotActive(on);
+    setAutoTrading(on);
+  };
+
+  const selectStrategy = (id: string) => {
+    setSelectedId(id);
+    localStorage.setItem("oko-auto-strategy", id);
+    // Turn off bot if strategy changes while running
+    if (botActive) { setBotActive(false); setAutoTrading(false); }
+  };
+
+  const active = STRATEGIES.find((s) => s.id === selectedId) ?? STRATEGIES[3];
+
+  const shortAddr = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
   return (
     <div className="space-y-4">
-      {/* Main toggle */}
+
+      {/* ── Кошелёк для авто-торговли ── */}
       <GlassCard>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="font-orbitron font-bold" style={{ color: "#C9A84C", fontSize: "13px" }}>Авто-торговля</div>
-            <div style={{ color: "rgba(255,255,255,0.3)", fontSize: "9px", marginTop: "3px" }}>
-              Автоматически торговать по сигналам OKO AI
+        <SectionLabel>КОШЕЛЁК ДЛЯ АВТО-ТОРГОВЛИ</SectionLabel>
+        {connected && address ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 px-3 py-3 rounded-xl"
+              style={{ background: "rgba(201,168,76,0.05)", border: "1px solid rgba(201,168,76,0.15)" }}>
+              <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                style={{ background: "rgba(201,168,76,0.12)", border: "1px solid rgba(201,168,76,0.25)" }}>
+                <Wallet size={14} style={{ color: "#C9A84C" }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div style={{ color: "#C9A84C", fontSize: "10px", fontWeight: 700, letterSpacing: "0.05em" }}>DEDICATED AUTO-WALLET</div>
+                <div style={{ color: "rgba(255,255,255,0.55)", fontSize: "11px", fontFamily: "monospace", marginTop: "2px" }}>
+                  {shortAddr(address)}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 px-2 py-1 rounded-lg"
+                style={{ background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.20)" }}>
+                <div className="w-1.5 h-1.5 rounded-full" style={{ background: "#4ADE80" }} />
+                <span style={{ color: "#4ADE80", fontSize: "8px", fontWeight: 700 }}>ACTIVE</span>
+              </div>
             </div>
+            <button
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl"
+              style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)", cursor: "pointer" }}>
+              <Send size={11} style={{ color: "rgba(201,168,76,0.7)" }} />
+              <span style={{ color: "rgba(255,255,255,0.5)", fontSize: "10px" }}>Перевести SOL с основного кошелька</span>
+            </button>
           </div>
-          <button
-            onClick={() => connected && setAutoTrading(!autoTrading)}
-            className="w-14 h-7 rounded-full relative transition-all"
-            style={{
-              background: autoTrading ? "rgba(201,168,76,0.25)" : "rgba(255,255,255,0.08)",
-              border: `2px solid ${autoTrading ? "rgba(201,168,76,0.50)" : "rgba(255,255,255,0.15)"}`,
-              opacity: connected ? 1 : 0.5,
-            }}
-          >
-            <div className="absolute top-0.5 w-5 h-5 rounded-full transition-all"
-              style={{ background: autoTrading ? "#C9A84C" : "rgba(255,255,255,0.3)", boxShadow: autoTrading ? "0 0 8px #C9A84C" : "none", left: autoTrading ? "calc(100% - 22px)" : "2px" }} />
-          </button>
-        </div>
-        {!connected && (
-          <div style={{ color: "rgba(255,82,82,0.7)", fontSize: "9px", marginTop: "8px" }}>Необходимо подключить кошелёк</div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-3 rounded-xl"
+            style={{ background: "rgba(255,82,82,0.06)", border: "1px solid rgba(255,82,82,0.18)" }}>
+            <AlertTriangle size={13} style={{ color: "#FF4D5E" }} />
+            <span style={{ color: "rgba(255,82,82,0.8)", fontSize: "10px" }}>Подключите кошелёк для авто-торговли</span>
+          </div>
         )}
       </GlassCard>
 
-      {autoTrading && (
-        <>
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl"
-            style={{ background: "rgba(201,168,76,0.06)", border: "1px solid rgba(201,168,76,0.20)" }}>
-            <TrendingUp size={14} style={{ color: "#C9A84C" }} />
-            <span style={{ color: "rgba(255,255,255,0.5)", fontSize: "9px", lineHeight: "1.5" }}>
-              Авто-торговля активна. AI сигналы с Score ≥ 70 будут исполняться автоматически в рамках риск-лимитов.
+      {/* ── Запуск бота ── */}
+      <GlassCard>
+        <div className="flex items-center justify-between">
+          <div>
+            <div style={{ color: botActive ? "#C9A84C" : "rgba(255,255,255,0.7)", fontSize: "13px", fontWeight: 700 }}>
+              {botActive ? "🟢 Бот запущен" : "⚪ Бот остановлен"}
+            </div>
+            <div style={{ color: "rgba(255,255,255,0.3)", fontSize: "9px", marginTop: "3px" }}>
+              {botActive ? `Стратегия: ${active.name}` : "Выберите стратегию и запустите"}
+            </div>
+          </div>
+          <Toggle on={botActive} onChange={() => activateBot(!botActive)} disabled={!connected} />
+        </div>
+        {botActive && (
+          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-xl"
+            style={{ background: "rgba(201,168,76,0.06)", border: "1px solid rgba(201,168,76,0.18)" }}>
+            <TrendingUp size={12} style={{ color: "#C9A84C" }} />
+            <span style={{ color: "rgba(255,255,255,0.45)", fontSize: "9px", lineHeight: "1.5" }}>
+              AI сигналы Score ≥ 70 · Jupiter V6 · Priority Fee: <span style={{ color: "#C9A84C" }}>{active.priorityFee}</span>
             </span>
           </div>
+        )}
+      </GlassCard>
 
-          <GlassCard>
-            <SectionLabel>ТЕКУЩИЕ ПАРАМЕТРЫ</SectionLabel>
-            <div className="space-y-2">
-              {[
-                { label: "Риск/сделку",      value: `${riskSettings.maxRiskPct}%` },
-                { label: "Stop-Loss",        value: `${sltpSettings.slPct}%` },
-                { label: "Take-Profit",      value: `${sltpSettings.tpPct}%` },
-                { label: "Трейлинг",         value: sltpSettings.trailingPct > 0 ? `${sltpSettings.trailingPct}%` : "Выкл" },
-                { label: "Мин. прибыль",     value: `${riskSettings.minProfitPct}%` },
-                { label: "Макс. позиций",    value: String(riskSettings.maxOpenPositions) },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex justify-between">
-                  <span style={{ color: "rgba(255,255,255,0.35)", fontSize: "10px" }}>{label}</span>
-                  <span style={{ color: "#C9A84C", fontSize: "10px", fontFamily: "monospace" }}>{value}</span>
+      {/* ── 9 стратегий ── */}
+      <div style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px", fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.1em", padding: "0 2px" }}>
+        ВЫБЕРИТЕ СТРАТЕГИЮ
+      </div>
+
+      {STRATEGIES.map((s) => {
+        const isSelected = s.id === selectedId;
+        const isExpanded = expanded === s.id;
+
+        return (
+          <div
+            key={s.id}
+            className="rounded-2xl overflow-hidden"
+            style={{
+              border: isSelected ? `1px solid ${s.riskColor}44` : "1px solid rgba(255,255,255,0.07)",
+              background: isSelected ? `${s.riskColor}08` : "rgba(255,255,255,0.02)",
+              transition: "all 0.2s",
+            }}
+          >
+            {/* Card header */}
+            <div className="flex items-center gap-3 px-4 py-3">
+              {/* Select radio */}
+              <button
+                onClick={() => selectStrategy(s.id)}
+                className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center"
+                style={{
+                  border: `2px solid ${isSelected ? s.riskColor : "rgba(255,255,255,0.2)"}`,
+                  background: isSelected ? `${s.riskColor}22` : "transparent",
+                }}
+              >
+                {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: s.riskColor }} />}
+              </button>
+
+              {/* Name + tagline */}
+              <div className="flex-1 min-w-0">
+                <div style={{ color: isSelected ? s.riskColor : "rgba(255,255,255,0.8)", fontSize: "11px", fontWeight: 700, lineHeight: 1.2 }}>
+                  {s.name}
                 </div>
-              ))}
-            </div>
-          </GlassCard>
-        </>
-      )}
+                <div style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px", marginTop: "2px" }}>{s.tagline}</div>
+              </div>
 
+              {/* Risk badge + stats + expand */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: s.riskColor, fontSize: "11px", fontWeight: 700, fontFamily: "monospace" }}>{s.dailyNet}</div>
+                  <div style={{ color: "rgba(255,255,255,0.25)", fontSize: "8px" }}>дневной net</div>
+                </div>
+                <button
+                  onClick={() => setExpanded(isExpanded ? null : s.id)}
+                  className="w-6 h-6 rounded-lg flex items-center justify-center"
+                  style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}>
+                  <ChevronRight size={11} style={{ color: "rgba(255,255,255,0.4)", transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                </button>
+              </div>
+            </div>
+
+            {/* Expanded details */}
+            {isExpanded && (
+              <div style={{ padding: "0 16px 14px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                {/* Beginner description */}
+                <div className="px-3 py-2.5 rounded-xl mt-3"
+                  style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}>
+                  <span style={{ color: "rgba(255,255,255,0.55)", fontSize: "10px", lineHeight: "1.5" }}>{s.description}</span>
+                </div>
+
+                {/* Params grid */}
+                <div className="grid grid-cols-2 gap-2 mt-3">
+                  {[
+                    { label: "КАПА",       value: s.mcapRange },
+                    { label: "ЛИКВИДНОСТЬ", value: s.liquidityMin },
+                    ...(s.volumeSpike ? [{ label: "VOL SPIKE", value: s.volumeSpike }] : []),
+                    { label: "МАКС. ПОЗИЦИЯ", value: s.maxPct + " баланса" },
+                    { label: "ТРЕЙЛИНГ",  value: s.trailing },
+                    { label: "PRIORITY FEE", value: s.priorityFee },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="px-3 py-2 rounded-xl"
+                      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                      <div style={{ color: "rgba(201,168,76,0.5)", fontSize: "7px", fontWeight: 700, letterSpacing: "0.08em", marginBottom: "2px" }}>{label}</div>
+                      <div style={{ color: "rgba(255,255,255,0.8)", fontSize: "10px", fontWeight: 700, fontFamily: "monospace" }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Risk level */}
+                <div className="flex items-center gap-2 mt-3">
+                  <span style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px" }}>Уровень риска:</span>
+                  <span style={{ color: s.riskColor, fontSize: "10px", fontWeight: 700 }}>{s.risk}</span>
+                </div>
+
+                {/* Select button if not selected */}
+                {!isSelected && (
+                  <button
+                    onClick={() => selectStrategy(s.id)}
+                    className="w-full mt-3 py-2.5 rounded-xl"
+                    style={{ background: `${s.riskColor}14`, border: `1px solid ${s.riskColor}44`, color: s.riskColor, fontSize: "10px", fontWeight: 700 }}>
+                    Выбрать эту стратегию
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* ── Как работает авто-торговля ── */}
       <GlassCard>
-        <SectionLabel>ЛОГИКА АВТО-СИГНАЛОВ</SectionLabel>
+        <SectionLabel>КАК РАБОТАЕТ БОТ</SectionLabel>
         <div className="space-y-3">
           {[
-            { step: "1", text: "OKO AI сканирует рынок и находит сигналы BUY с Score ≥ 70" },
-            { step: "2", text: "Риск-менеджер проверяет: размер ≤ макс. риска, прибыль ≥ мин. прибыли" },
-            { step: "3", text: "Своп через Jupiter V6 — лучший маршрут на Solana" },
-            { step: "4", text: "Автоматически размещаются SL/TP через Jupiter Trigger Orders" },
+            { step: "1", text: "OKO AI сканирует Solana 24/7 и находит сигналы по выбранной стратегии" },
+            { step: "2", text: "Риск-менеджер проверяет: размер позиции, MCAP, ликвидность, volume spike" },
+            { step: "3", text: "Своп через Jupiter V6 с авто-выбором Priority Fee под стратегию" },
+            { step: "4", text: "SL/TP и трейлинг размещаются автономно через Jupiter Trigger Orders" },
           ].map(({ step, text }) => (
             <div key={step} className="flex items-start gap-3">
               <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                style={{ background: "rgba(201,168,76,0.12)", border: "1px solid rgba(201,168,76,0.25)" }}>
+                style={{ background: "rgba(201,168,76,0.10)", border: "1px solid rgba(201,168,76,0.22)" }}>
                 <span style={{ color: "#C9A84C", fontSize: "8px", fontWeight: 700 }}>{step}</span>
               </div>
-              <span style={{ color: "rgba(255,255,255,0.45)", fontSize: "10px", lineHeight: "1.5" }}>{text}</span>
+              <span style={{ color: "rgba(255,255,255,0.40)", fontSize: "10px", lineHeight: "1.55" }}>{text}</span>
             </div>
           ))}
         </div>
