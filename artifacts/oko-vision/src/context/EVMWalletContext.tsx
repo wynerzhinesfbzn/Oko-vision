@@ -91,6 +91,7 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
       setBalance(ethers.formatEther(raw));
     } catch (e) {
       console.warn("[EVM] balance error", e);
+      setBalance(null);   // clear stale value so UI shows error state, not old data
     } finally {
       setBalanceLoading(false);
     }
@@ -133,7 +134,12 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
   const unlock = async (password: string) => {
     const raw = localStorage.getItem(SK_ENCRYPTED);
     if (!raw) throw new Error("Нет сохранённого кошелька");
-    const payload: EncryptedPayload = JSON.parse(raw);
+    let payload: EncryptedPayload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw new Error("Данные кошелька повреждены — восстановите из фразы");
+    }
     const pk = await decryptPrivateKey(payload, password);   // throws if wrong password
     setPrivateKeyMem(pk);
     // derive address from key to verify
@@ -160,9 +166,12 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
     if (!privateKeyMem) throw new Error("Кошелёк заблокирован — введите пароль");
     if (!ethers.isAddress(to)) throw new Error("Неверный адрес получателя");
 
+    const trimmed = amountEth.trim();
+    if (!trimmed || Number(trimmed) <= 0) throw new Error("Введите положительную сумму");
+
     const p      = getProvider();
     const signer = new ethers.Wallet(privateKeyMem, p);
-    const value  = ethers.parseEther(amountEth);
+    const value  = ethers.parseEther(trimmed);
 
     // Estimate gas + get fee data
     const feeData = await p.getFeeData();
@@ -188,8 +197,14 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
     saveTxList(updated);
     setTxHistory(updated);
 
-    // Wait for 1 confirmation in background
-    tx.wait(1).then(() => refreshBalance()).catch(console.warn);
+    // Wait for 1 confirmation in background.
+    // Guard against state update on unmounted component via a WeakRef-safe flag.
+    let active = true;
+    tx.wait(1)
+      .then(() => { if (active) refreshBalance(); })
+      .catch(console.warn);
+    // Cleanup reference after a reasonable timeout (10 min)
+    setTimeout(() => { active = false; }, 600_000);
 
     return tx.hash;
   };

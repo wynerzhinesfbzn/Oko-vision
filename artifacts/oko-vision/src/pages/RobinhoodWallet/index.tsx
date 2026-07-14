@@ -42,6 +42,10 @@ export default function RobinhoodWallet() {
     return "dashboard";
   });
 
+  // Temporary mnemonic storage between create-show and set-password views.
+  // MUST be declared here (top-level, before return) to satisfy React hooks rules.
+  const pendingMnemonic = useRef<string>("");
+
   // Whenever wallet state changes from outside
   useEffect(() => {
     if (!evm.hasWallet) { setView("landing"); return; }
@@ -88,9 +92,6 @@ export default function RobinhoodWallet() {
       </AnimatePresence>
     </div>
   );
-
-  // Temporary mnemonic storage between create-show and set-password views
-  var pendingMnemonic = useRef<string>("");
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -528,15 +529,27 @@ function SendView({ onBack }: { onBack: () => void }) {
   const [err,     setErr]     = useState("");
   const [txHash,  setTxHash]  = useState("");
 
-  const bal = parseFloat(evm.balance ?? "0");
+  // Use BigInt comparison (via ethers) to avoid float precision bugs
+  const balRaw  = evm.balance ?? "0";
+  const bal      = parseFloat(balRaw);
 
   const send = async () => {
-    if (!ethers.isAddress(to.trim())) return setErr("Неверный адрес (0x…)");
-    if (!amount || +amount <= 0)      return setErr("Введите сумму");
-    if (+amount >= bal)               return setErr("Недостаточно средств (учтите газ)");
+    const trimmedTo  = to.trim();
+    const trimmedAmt = amount.trim();
+    if (!ethers.isAddress(trimmedTo)) return setErr("Неверный адрес (0x…)");
+    if (!trimmedAmt || Number(trimmedAmt) <= 0) return setErr("Введите положительную сумму");
+    try {
+      // BigInt-safe balance check: keep 0.0005 ETH buffer for gas
+      const amtWei = ethers.parseEther(trimmedAmt);
+      const balWei = ethers.parseEther(balRaw);
+      const gasBuffer = ethers.parseEther("0.0005");
+      if (amtWei + gasBuffer > balWei) return setErr("Недостаточно средств (учтите газ ≈ 0.0005 ETH)");
+    } catch {
+      return setErr("Неверный формат суммы");
+    }
     setLoading(true); setErr("");
     try {
-      const hash = await evm.sendTransaction(to.trim(), amount);
+      const hash = await evm.sendTransaction(trimmedTo, trimmedAmt);
       setTxHash(hash);
     } catch (e: any) {
       setErr(e.message);
@@ -596,7 +609,17 @@ function SendView({ onBack }: { onBack: () => void }) {
             style={{ ...inputStyle, paddingRight: 60 }}
           />
           <button
-            onClick={() => setAmount(String(Math.max(0, bal - 0.0005).toFixed(6)))}
+            onClick={() => {
+              try {
+                // BigInt-safe MAX: balance minus 0.0005 ETH gas buffer
+                const balWei    = ethers.parseEther(balRaw);
+                const bufferWei = ethers.parseEther("0.0005");
+                const maxWei    = balWei > bufferWei ? balWei - bufferWei : 0n;
+                setAmount(ethers.formatEther(maxWei));
+              } catch {
+                setAmount("0");
+              }
+            }}
             style={{
               position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
               background: `${C.blue}20`, border: `1px solid ${C.blue}40`,
