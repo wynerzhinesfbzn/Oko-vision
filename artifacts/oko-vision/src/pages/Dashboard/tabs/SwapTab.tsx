@@ -1,9 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useOkoWallet } from '@/context/WalletContext';
-import { ArrowsUpDownIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { ArrowsUpDownIcon } from '@heroicons/react/24/outline';
 import { motion } from 'framer-motion';
-
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 interface JupiterQuote {
   inAmount: string;
@@ -29,70 +27,55 @@ export default function SwapTab() {
   const [quote,     setQuote]     = useState<JupiterQuote | null>(null);
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState('');
-  const [swapped,   setSwapped]   = useState(false);
+  const [done,      setDone]      = useState(false);
 
-  const flip = () => {
-    setFromToken(toToken);
-    setToToken(fromToken);
-    setQuote(null);
-    setAmount('');
-  };
+  const flip = () => { setFromToken(toToken); setToToken(fromToken); setQuote(null); setAmount(''); };
 
   const fetchQuote = useCallback(async () => {
     if (!amount || isNaN(+amount) || +amount <= 0) return;
-    setLoading(true);
-    setError('');
-    setQuote(null);
+    setLoading(true); setError(''); setQuote(null); setDone(false);
     try {
       const lamports = Math.round(+amount * Math.pow(10, fromToken.decimals));
-      const url = `https://quote-api.jup.ag/v6/quote?inputMint=${fromToken.mint}&outputMint=${toToken.mint}&amount=${lamports}&slippageBps=50`;
-      const res = await fetch(url);
+      const res = await fetch(
+        `https://quote-api.jup.ag/v6/quote?inputMint=${fromToken.mint}&outputMint=${toToken.mint}&amount=${lamports}&slippageBps=50`
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setQuote(data);
     } catch (e: any) {
-      setError(e.message ?? 'Ошибка получения котировки');
-    } finally {
-      setLoading(false);
-    }
+      setError(e.message ?? 'Ошибка котировки');
+    } finally { setLoading(false); }
   }, [amount, fromToken, toToken]);
 
-  const outAmount = quote
-    ? (Number(quote.outAmount) / Math.pow(10, toToken.decimals)).toFixed(6)
-    : '';
-
+  const outAmount = quote ? (Number(quote.outAmount) / Math.pow(10, toToken.decimals)).toFixed(6) : '';
   const priceImpact = quote ? Number(quote.priceImpactPct).toFixed(3) : null;
   const route = quote?.routePlan?.map(r => r.swapInfo.label).join(' → ') ?? '';
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-xl font-semibold text-white mb-6">Обмен токенов</h1>
+    <div className="px-4 pt-6 pb-4 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-white">Обмен</h1>
+        <p className="text-[#555] text-sm">Solana · Jupiter Aggregator</p>
+      </div>
 
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white/[0.04] border border-white/[0.07] rounded-2xl p-5 space-y-3"
+        className="bg-[#111] border border-white/[0.06] rounded-2xl p-5 space-y-3"
       >
-        {/* Network badge */}
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-medium">Solana · Jupiter</span>
-        </div>
-
         {/* From */}
-        <div className="bg-white/[0.06] rounded-xl p-4 space-y-2">
-          <span className="text-xs text-gray-500">Отдаёте</span>
+        <div className="bg-[#1a1a1a] rounded-xl p-4">
+          <p className="text-xs text-[#555] mb-2">Отдаёте</p>
           <div className="flex items-center gap-3">
             <input
               type="number"
-              min="0"
-              step="any"
               value={amount}
-              onChange={e => { setAmount(e.target.value); setQuote(null); }}
+              onChange={e => { setAmount(e.target.value); setQuote(null); setDone(false); }}
               placeholder="0.00"
-              className="flex-1 bg-transparent text-2xl font-light text-white placeholder-gray-600 outline-none"
+              className="flex-1 bg-transparent text-3xl font-light text-white placeholder-[#333] outline-none"
             />
-            <TokenSelect value={fromToken} options={POPULAR_TOKENS.filter(t => t.mint !== toToken.mint)} onChange={setFromToken} />
+            <TokenPill value={fromToken} options={POPULAR_TOKENS.filter(t => t.mint !== toToken.mint)} onChange={setFromToken} />
           </div>
         </div>
 
@@ -100,67 +83,62 @@ export default function SwapTab() {
         <div className="flex justify-center">
           <button
             onClick={flip}
-            className="w-9 h-9 rounded-full bg-white/[0.07] border border-white/[0.12] flex items-center justify-center text-gray-400 hover:text-orange-400 hover:bg-orange-500/10 transition-all"
+            className="w-9 h-9 rounded-full bg-[#1a1a1a] border border-white/[0.08] flex items-center justify-center text-[#555] hover:text-[#2962ff] hover:border-[#2962ff]/40 transition-all"
           >
             <ArrowsUpDownIcon className="w-4 h-4" />
           </button>
         </div>
 
         {/* To */}
-        <div className="bg-white/[0.06] rounded-xl p-4 space-y-2">
-          <span className="text-xs text-gray-500">Получаете</span>
+        <div className="bg-[#1a1a1a] rounded-xl p-4">
+          <p className="text-xs text-[#555] mb-2">Получаете</p>
           <div className="flex items-center gap-3">
             <input
               readOnly
               value={outAmount}
               placeholder="0.00"
-              className="flex-1 bg-transparent text-2xl font-light text-white placeholder-gray-600 outline-none opacity-80"
+              className="flex-1 bg-transparent text-3xl font-light text-white placeholder-[#333] outline-none"
             />
-            <TokenSelect value={toToken} options={POPULAR_TOKENS.filter(t => t.mint !== fromToken.mint)} onChange={t => { setToToken(t); setQuote(null); }} />
+            <TokenPill value={toToken} options={POPULAR_TOKENS.filter(t => t.mint !== fromToken.mint)} onChange={t => { setToToken(t); setQuote(null); }} />
           </div>
         </div>
 
         {/* Route info */}
         {quote && (
-          <div className="bg-white/[0.03] rounded-xl px-4 py-3 space-y-1 text-xs text-gray-400">
-            {route && <p>Маршрут: <span className="text-gray-300">{route}</span></p>}
+          <div className="px-3 py-2.5 bg-white/[0.03] rounded-xl text-xs text-[#555] space-y-1">
+            {route && <p>Маршрут: <span className="text-[#888]">{route}</span></p>}
             {priceImpact && (
-              <p>Влияние на цену: <span className={Number(priceImpact) > 1 ? 'text-red-400' : 'text-emerald-400'}>{priceImpact}%</span></p>
+              <p>Влияние на цену: <span className={Number(priceImpact) > 1 ? 'text-[#ff1744]' : 'text-[#00c853]'}>{priceImpact}%</span></p>
             )}
           </div>
         )}
 
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {error && <p className="text-[#ff6b6b] text-sm">{error}</p>}
 
-        {/* Buttons */}
         <button
           onClick={fetchQuote}
           disabled={loading || !amount}
-          className="w-full py-3 rounded-xl bg-white/[0.08] text-gray-300 hover:bg-white/[0.12] disabled:opacity-40 transition-all text-sm font-medium"
+          className="w-full py-3 rounded-xl bg-white/[0.06] text-[#888] hover:bg-white/[0.10] disabled:opacity-40 transition-all text-sm font-medium"
         >
-          {loading ? 'Загрузка...' : 'Получить курс'}
+          {loading ? 'Поиск маршрута...' : 'Получить курс'}
         </button>
 
         <button
           disabled={!quote || !connected}
-          onClick={() => setSwapped(true)}
-          className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold shadow-lg shadow-orange-500/25 hover:opacity-90 disabled:opacity-40 transition-all"
+          onClick={() => setDone(true)}
+          className="w-full py-3.5 rounded-xl bg-[#2962ff] hover:bg-[#1e50e2] text-white font-semibold disabled:opacity-40 transition-all"
         >
-          {!connected ? 'Подключите кошелёк' : swapped ? '✓ Выполнено (симуляция)' : 'Обменять'}
+          {!connected ? 'Подключите кошелёк' : done ? '✓ Выполнено (симуляция)' : 'Обменять'}
         </button>
 
-        <p className="text-center text-xs text-gray-600">
-          Котировки Jupiter · slippage 0.5%
-        </p>
+        <p className="text-center text-xs text-[#333]">Slippage 0.5% · Powered by Jupiter v6</p>
       </motion.div>
     </div>
   );
 }
 
-function TokenSelect({
-  value,
-  options,
-  onChange,
+function TokenPill({
+  value, options, onChange,
 }: {
   value: typeof POPULAR_TOKENS[0];
   options: typeof POPULAR_TOKENS;
@@ -173,12 +151,9 @@ function TokenSelect({
         const t = options.find(o => o.mint === e.target.value) ?? value;
         onChange(t);
       }}
-      className="bg-white/[0.08] border border-white/[0.12] rounded-xl px-3 py-2 text-white text-sm font-medium outline-none cursor-pointer"
+      className="bg-[#2a2a2a] border border-white/[0.10] rounded-xl px-3 py-2 text-white text-sm font-semibold outline-none cursor-pointer"
     >
-      {options.map(t => (
-        <option key={t.mint} value={t.mint}>{t.symbol}</option>
-      ))}
-      {/* Show current if not in options */}
+      {options.map(t => <option key={t.mint} value={t.mint}>{t.symbol}</option>)}
       {!options.find(o => o.mint === value.mint) && (
         <option value={value.mint}>{value.symbol}</option>
       )}

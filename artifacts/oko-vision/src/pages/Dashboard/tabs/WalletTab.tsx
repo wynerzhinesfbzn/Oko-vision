@@ -1,123 +1,168 @@
+import { useEVMWallet } from '@/contexts/EVMWalletContext/EVMWalletContext';
 import { useBalance } from '@/context/BalanceContext';
-import { useOkoWallet } from '@/context/WalletContext';
 import { useTrading } from '@/context/TradingContext';
-import { ArrowUpIcon, ArrowDownIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { ArrowUpIcon, ArrowDownIcon, ArrowPathIcon, QrCodeIcon, PaperAirplaneIcon } from '@heroicons/react/24/outline';
 import { motion } from 'framer-motion';
 
 export default function WalletTab() {
-  const { solBalance, solPrice, solUsd, tokens, totalUsd, loading, refresh } = useBalance();
-  const { address, shortAddress, connected } = useOkoWallet();
-  const { totalPnlUsd, totalPnlPct, positions } = useTrading();
+  const { wallet, balance, balanceUsd, ethPrice, loading, refreshBalance } = useEVMWallet();
+  const { solBalance, solUsd, tokens, totalUsd } = useBalance();
+  const { totalPnlUsd, totalPnlPct } = useTrading();
 
-  const pnlPositive = totalPnlUsd >= 0;
+  const pnlPos = totalPnlUsd >= 0;
+  const ethBal = parseFloat(balance ?? '0');
+
+  const combinedUsd = (balanceUsd ?? 0) + totalUsd;
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-5">
-      {/* Header */}
+    <div className="px-4 pt-6 pb-4 space-y-5">
+      {/* ── Header ── */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-white">Кошелёк</h1>
+        <div>
+          <p className="text-[#888] text-xs uppercase tracking-widest mb-0.5">Портфель</p>
+          {wallet && (
+            <p className="text-[#555] text-xs font-mono">{wallet.shortAddress}</p>
+          )}
+        </div>
         <button
-          onClick={refresh}
+          onClick={refreshBalance}
           disabled={loading}
-          className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/[0.06] transition-all"
+          className="p-2 rounded-xl text-[#555] hover:text-white hover:bg-white/[0.06] transition-all"
         >
           <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
-      {/* Balance card */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-gradient-to-br from-orange-500/10 to-amber-500/5 border border-orange-500/20 rounded-2xl p-6 fire-glow"
-      >
-        <p className="text-sm text-gray-400 mb-1">Общий баланс</p>
-        <p className="text-4xl font-light text-white">
-          ${totalUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      {/* ── Balance hero ── */}
+      <div className="text-center py-4">
+        <p className="text-5xl font-light text-white tracking-tight">
+          ${combinedUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </p>
+        <div className={`mt-2 inline-flex items-center gap-1 text-sm font-medium ${pnlPos ? 'text-[#00c853]' : 'text-[#ff1744]'}`}>
+          {pnlPos ? <ArrowUpIcon className="w-3.5 h-3.5" /> : <ArrowDownIcon className="w-3.5 h-3.5" />}
+          {pnlPos ? '+' : ''}${totalPnlUsd.toFixed(2)} ({totalPnlPct.toFixed(2)}%)
+        </div>
+      </div>
 
-        <div className={`mt-2 flex items-center gap-1 text-sm font-medium ${pnlPositive ? 'text-emerald-400' : 'text-red-400'}`}>
-          {pnlPositive ? <ArrowUpIcon className="w-3.5 h-3.5" /> : <ArrowDownIcon className="w-3.5 h-3.5" />}
-          {pnlPositive ? '+' : ''}${totalPnlUsd.toFixed(2)} ({totalPnlPct.toFixed(2)}%) всего P&L
+      {/* ── Quick actions ── */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: 'Получить', icon: QrCodeIcon },
+          { label: 'Отправить', icon: PaperAirplaneIcon },
+          { label: 'Обновить', icon: ArrowPathIcon, action: refreshBalance },
+        ].map(({ label, icon: Icon, action }) => (
+          <button
+            key={label}
+            onClick={action}
+            className="flex flex-col items-center gap-2 py-4 bg-[#111] hover:bg-[#1a1a1a] rounded-2xl border border-white/[0.06] transition-all active:scale-95"
+          >
+            <Icon className="w-5 h-5 text-[#888]" />
+            <span className="text-xs text-[#888]">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── Assets ── */}
+      <div className="rounded-2xl bg-[#111] border border-white/[0.06] overflow-hidden">
+        <div className="px-4 py-3 border-b border-white/[0.05]">
+          <span className="text-xs font-medium text-[#555] uppercase tracking-wider">Активы</span>
         </div>
 
-        {connected && address && (
-          <p className="mt-3 text-xs text-gray-500 font-mono">{shortAddress}</p>
+        {/* EVM / Robinhood Chain */}
+        {wallet && (
+          <AssetRow
+            icon={<span className="text-lg">Ξ</span>}
+            color="#627eea"
+            name="Ether"
+            symbol={`ETH · RH Chain`}
+            amount={`${ethBal.toFixed(4)} ETH`}
+            usd={balanceUsd != null ? `$${balanceUsd.toFixed(2)}` : '—'}
+            change={null}
+          />
         )}
-      </motion.div>
 
-      {/* SOL row */}
-      <div className="bg-white/[0.04] border border-white/[0.07] rounded-2xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-white/[0.06]">
-          <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">Активы</span>
-        </div>
-
-        {/* SOL */}
-        <div className="flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-xs font-bold text-white">S</div>
-            <div>
-              <p className="text-sm font-medium text-white">Solana</p>
-              <p className="text-xs text-gray-500">{solBalance.toFixed(4)} SOL · ${solPrice.toFixed(2)}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className="text-sm font-medium text-white">${solUsd.toFixed(2)}</p>
-          </div>
-        </div>
+        {/* Solana native */}
+        <AssetRow
+          icon={<span className="text-lg">◎</span>}
+          color="#9945ff"
+          name="Solana"
+          symbol="SOL"
+          amount={`${solBalance.toFixed(4)} SOL`}
+          usd={`$${solUsd.toFixed(2)}`}
+          change={null}
+        />
 
         {/* SPL tokens */}
-        {tokens.map((tok, i) => (
-          <div key={i} className="flex items-center justify-between px-4 py-3 hover:bg-white/[0.03] transition-colors border-t border-white/[0.04]">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-gray-300 overflow-hidden">
-                {(tok as any).logo ? (
-                  <img src={(tok as any).logo} alt="" className="w-full h-full object-cover rounded-full" />
-                ) : (
-                  ((tok as any).symbol ?? '?').slice(0, 2)
-                )}
-              </div>
-              <div>
-                <p className="text-sm font-medium text-white">{(tok as any).symbol ?? 'Unknown'}</p>
-                <p className="text-xs text-gray-500">{Number((tok as any).amount ?? 0).toLocaleString()} tokens</p>
-              </div>
-            </div>
-            <div className="text-right">
-              <p className="text-sm font-medium text-white">${Number((tok as any).usdValue ?? 0).toFixed(2)}</p>
-            </div>
-          </div>
+        {tokens.slice(0, 5).map((tok: any, i: number) => (
+          <AssetRow
+            key={i}
+            icon={tok.logo ? <img src={tok.logo} className="w-6 h-6 rounded-full" alt="" /> : <span className="text-sm font-bold">{tok.symbol?.slice(0, 2)}</span>}
+            color="#2962ff"
+            name={tok.symbol ?? 'Token'}
+            symbol={tok.symbol ?? '—'}
+            amount={Number(tok.amount ?? 0).toLocaleString()}
+            usd={`$${Number(tok.usdValue ?? 0).toFixed(2)}`}
+            change={null}
+          />
         ))}
 
-        {!connected && (
-          <div className="px-4 py-8 text-center text-gray-500 text-sm">
-            Подключите кошелёк для просмотра баланса
+        {!wallet && tokens.length === 0 && (
+          <div className="px-4 py-8 text-center text-[#555] text-sm">
+            Подключите кошелёк для просмотра активов
           </div>
         )}
       </div>
 
-      {/* Open positions */}
-      {positions.length > 0 && (
-        <div className="bg-white/[0.04] border border-white/[0.07] rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-white/[0.06]">
-            <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">Открытые позиции ({positions.length})</span>
-          </div>
-          {positions.map((pos, i) => {
-            const pnl = (pos as any).pnlUsd ?? 0;
-            const pos2 = pnlPositive;
-            return (
-              <div key={i} className="flex items-center justify-between px-4 py-3 border-t border-white/[0.04] hover:bg-white/[0.03] transition-colors">
-                <div>
-                  <p className="text-sm font-medium text-white">{(pos as any).symbol ?? (pos as any).mint?.slice(0, 8)}</p>
-                  <p className="text-xs text-gray-500">{(pos as any).side ?? 'long'} · {(pos as any).size ?? '-'}</p>
-                </div>
-                <p className={`text-sm font-medium ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                </p>
-              </div>
-            );
-          })}
+      {/* ── Network info ── */}
+      <div className="flex items-center justify-between px-4 py-3 bg-[#111] rounded-2xl border border-white/[0.06]">
+        <div className="flex items-center gap-2.5">
+          <div className="w-2 h-2 rounded-full bg-[#00c853] shadow-[0_0_6px_#00c853]" />
+          <span className="text-sm text-[#888]">Robinhood Chain</span>
         </div>
-      )}
+        <span className="text-xs text-[#555] font-mono">Chain ID 4663</span>
+      </div>
     </div>
+  );
+}
+
+function AssetRow({
+  icon, color, name, symbol, amount, usd, change,
+}: {
+  icon: React.ReactNode;
+  color: string;
+  name: string;
+  symbol: string;
+  amount: string;
+  usd: string;
+  change: number | null;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="flex items-center justify-between px-4 py-3.5 border-t border-white/[0.04] hover:bg-white/[0.02] transition-colors cursor-pointer"
+    >
+      <div className="flex items-center gap-3">
+        <div
+          className="w-9 h-9 rounded-full flex items-center justify-center text-white shrink-0"
+          style={{ backgroundColor: color + '22', border: `1px solid ${color}33` }}
+        >
+          {icon}
+        </div>
+        <div>
+          <p className="text-sm font-medium text-white leading-tight">{name}</p>
+          <p className="text-xs text-[#555] leading-tight">{symbol}</p>
+        </div>
+      </div>
+      <div className="text-right">
+        <p className="text-sm font-medium text-white">{usd}</p>
+        <p className="text-xs text-[#555]">{amount}</p>
+        {change !== null && (
+          <p className={`text-xs font-medium ${change >= 0 ? 'text-[#00c853]' : 'text-[#ff1744]'}`}>
+            {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+          </p>
+        )}
+      </div>
+    </motion.div>
   );
 }

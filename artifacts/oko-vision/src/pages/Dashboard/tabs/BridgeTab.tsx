@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLongRightIcon } from '@heroicons/react/24/outline';
 
-// LI.FI public API — no key required for quotes
 const LIFI_API = 'https://li.quest/v1';
 
 const CHAINS = [
@@ -14,7 +13,6 @@ const CHAINS = [
   { id: '43114', name: 'Avalanche', symbol: 'AVAX' },
 ];
 
-// Native token addresses per chain (LI.FI convention)
 const NATIVE: Record<string, string> = {
   '1':     '0x0000000000000000000000000000000000000000',
   '137':   '0x0000000000000000000000000000000000001010',
@@ -27,14 +25,10 @@ const NATIVE: Record<string, string> = {
 interface LifiQuote {
   estimate: {
     toAmount: string;
-    toAmountMin: string;
     executionDuration: number;
-    feeCosts: { amount: string; token: { symbol: string } }[];
+    feeCosts: { amount: string; token: { symbol: string; decimals: number } }[];
   };
-  action: {
-    fromToken: { symbol: string; decimals: number };
-    toToken: { symbol: string; decimals: number };
-  };
+  action: { toToken: { symbol: string; decimals: number } };
 }
 
 export default function BridgeTab() {
@@ -47,101 +41,83 @@ export default function BridgeTab() {
 
   const fetchQuote = async () => {
     if (!amount || isNaN(+amount) || +amount <= 0) return;
-    setLoading(true);
-    setError('');
-    setQuote(null);
+    setLoading(true); setError(''); setQuote(null);
     try {
-      const decimals = 18;
-      const amountWei = BigInt(Math.round(+amount * 1e9)) * BigInt(1e9);
+      const amountWei = (BigInt(Math.round(+amount * 1e9)) * BigInt(1e9)).toString();
       const params = new URLSearchParams({
-        fromChainId: fromChain.id,
-        fromAmount:  amountWei.toString(),
+        fromChainId: fromChain.id, fromAmount: amountWei,
         fromTokenAddress: NATIVE[fromChain.id],
-        toChainId:   toChain.id,
-        toTokenAddress: NATIVE[toChain.id],
-        fromAddress: '0x0000000000000000000000000000000000000001', // demo addr
+        toChainId: toChain.id, toTokenAddress: NATIVE[toChain.id],
+        fromAddress: '0x0000000000000000000000000000000000000001',
       });
       const res = await fetch(`${LIFI_API}/quote?${params}`);
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(txt || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setQuote(data);
     } catch (e: any) {
       setError(e.message ?? 'Ошибка LI.FI');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
-  const toDecimals = quote ? quote.action.toToken.decimals : 18;
-  const toAmount = quote
-    ? (Number(quote.estimate.toAmount) / Math.pow(10, toDecimals)).toFixed(6)
-    : '';
-  const duration = quote
-    ? Math.ceil(quote.estimate.executionDuration / 60) + ' мин'
-    : '';
+  const toDecimals = quote?.action.toToken.decimals ?? 18;
+  const toAmount = quote ? (Number(quote.estimate.toAmount) / Math.pow(10, toDecimals)).toFixed(6) : '';
+  const duration = quote ? `~${Math.ceil(quote.estimate.executionDuration / 60)} мин` : '';
 
   return (
-    <div className="p-6 max-w-xl mx-auto">
-      <h1 className="text-xl font-semibold text-white mb-2">Кросс-чейн мост</h1>
-      <p className="text-sm text-gray-500 mb-6">Powered by LI.FI — лучший маршрут автоматически</p>
+    <div className="px-4 pt-6 pb-4 space-y-5">
+      <div>
+        <h1 className="text-xl font-semibold text-white">Мост</h1>
+        <p className="text-[#555] text-sm">Кросс-чейн · LI.FI</p>
+      </div>
 
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-white/[0.04] border border-white/[0.07] rounded-2xl p-5 space-y-4"
+        className="bg-[#111] border border-white/[0.06] rounded-2xl p-5 space-y-4"
       >
-        {/* Chain selectors */}
-        <div className="flex items-center gap-3">
+        {/* Chain row */}
+        <div className="flex items-end gap-3">
           <div className="flex-1">
-            <label className="text-xs text-gray-500 mb-1 block">Откуда</label>
+            <label className="text-xs text-[#555] mb-1.5 block">Откуда</label>
             <ChainSelect value={fromChain} options={CHAINS.filter(c => c.id !== toChain.id)} onChange={c => { setFromChain(c); setQuote(null); }} />
           </div>
-          <ArrowLongRightIcon className="w-5 h-5 text-gray-500 mt-4 shrink-0" />
+          <div className="pb-2.5">
+            <ArrowLongRightIcon className="w-5 h-5 text-[#333]" />
+          </div>
           <div className="flex-1">
-            <label className="text-xs text-gray-500 mb-1 block">Куда</label>
+            <label className="text-xs text-[#555] mb-1.5 block">Куда</label>
             <ChainSelect value={toChain} options={CHAINS.filter(c => c.id !== fromChain.id)} onChange={c => { setToChain(c); setQuote(null); }} />
           </div>
         </div>
 
         {/* Amount */}
-        <div className="bg-white/[0.06] rounded-xl p-4">
-          <span className="text-xs text-gray-500">Сумма ({fromChain.symbol})</span>
+        <div className="bg-[#1a1a1a] rounded-xl p-4">
+          <p className="text-xs text-[#555] mb-2">Сумма ({fromChain.symbol})</p>
           <input
             type="number"
-            min="0"
-            step="any"
             value={amount}
             onChange={e => { setAmount(e.target.value); setQuote(null); }}
             placeholder="0.0"
-            className="w-full bg-transparent text-2xl font-light text-white placeholder-gray-600 outline-none mt-1"
+            className="w-full bg-transparent text-3xl font-light text-white placeholder-[#333] outline-none"
           />
         </div>
 
         {/* Result */}
         {quote && (
-          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 space-y-1 text-sm">
+          <div className="bg-[#00c853]/5 border border-[#00c853]/15 rounded-xl p-4 space-y-2 text-sm">
             <div className="flex justify-between">
-              <span className="text-gray-400">Получите</span>
-              <span className="text-white font-medium">{toAmount} {toChain.symbol}</span>
+              <span className="text-[#555]">Получите</span>
+              <span className="text-white font-semibold">{toAmount} {toChain.symbol}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Время</span>
-              <span className="text-gray-300">~{duration}</span>
+              <span className="text-[#555]">Время</span>
+              <span className="text-[#888]">{duration}</span>
             </div>
-            {quote.estimate.feeCosts?.map((f, i) => (
-              <div key={i} className="flex justify-between">
-                <span className="text-gray-400">Комиссия ({f.token.symbol})</span>
-                <span className="text-gray-300">{(Number(f.amount) / 1e18).toFixed(6)}</span>
-              </div>
-            ))}
           </div>
         )}
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-sm text-red-400">
+          <div className="bg-[#ff1744]/8 border border-[#ff1744]/20 rounded-xl px-4 py-3 text-sm text-[#ff6b6b]">
             {error}
           </div>
         )}
@@ -149,31 +125,25 @@ export default function BridgeTab() {
         <button
           onClick={fetchQuote}
           disabled={loading || !amount}
-          className="w-full py-3 rounded-xl bg-white/[0.08] text-gray-300 hover:bg-white/[0.12] disabled:opacity-40 transition-all text-sm font-medium"
+          className="w-full py-3 rounded-xl bg-white/[0.06] text-[#888] hover:bg-white/[0.10] disabled:opacity-40 transition-all text-sm font-medium"
         >
           {loading ? 'Поиск маршрута...' : 'Найти лучший маршрут'}
         </button>
 
         <button
           disabled={!quote}
-          className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 text-white font-semibold shadow-lg shadow-orange-500/25 hover:opacity-90 disabled:opacity-40 transition-all"
+          className="w-full py-3.5 rounded-xl bg-[#2962ff] hover:bg-[#1e50e2] text-white font-semibold disabled:opacity-40 transition-all"
         >
           Перевести
         </button>
 
-        <p className="text-center text-xs text-gray-600">
-          Маршрут через LI.FI · без регистрации
-        </p>
+        <p className="text-center text-xs text-[#333]">Маршрут через LI.FI · без регистрации</p>
       </motion.div>
     </div>
   );
 }
 
-function ChainSelect({
-  value,
-  options,
-  onChange,
-}: {
+function ChainSelect({ value, options, onChange }: {
   value: typeof CHAINS[0];
   options: typeof CHAINS;
   onChange: (c: typeof CHAINS[0]) => void;
@@ -181,18 +151,11 @@ function ChainSelect({
   return (
     <select
       value={value.id}
-      onChange={e => {
-        const c = options.find(o => o.id === e.target.value) ?? value;
-        onChange(c);
-      }}
-      className="w-full bg-white/[0.08] border border-white/[0.12] rounded-xl px-3 py-2.5 text-white text-sm font-medium outline-none cursor-pointer"
+      onChange={e => { const c = options.find(o => o.id === e.target.value) ?? value; onChange(c); }}
+      className="w-full bg-[#1a1a1a] border border-white/[0.08] rounded-xl px-3 py-2.5 text-white text-sm font-medium outline-none cursor-pointer"
     >
-      {options.map(c => (
-        <option key={c.id} value={c.id}>{c.name}</option>
-      ))}
-      {!options.find(o => o.id === value.id) && (
-        <option value={value.id}>{value.name}</option>
-      )}
+      {options.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+      {!options.find(o => o.id === value.id) && <option value={value.id}>{value.name}</option>}
     </select>
   );
 }
