@@ -228,9 +228,7 @@ function SetPasswordView({ mnemonic, onNext, onBack }: { mnemonic: string; onNex
     if (pw !== pw2)    return setErr("Пароли не совпадают");
     setLoading(true); setErr("");
     try {
-      await evm.createWallet(pw);
-      // Actually we need to use the mnemonic we already generated…
-      // createWallet() generates a new one, so import it instead
+      // Import the mnemonic that was already generated in CreateShowView
       await evm.importFromPhrase(mnemonic, pw);
       onNext();
     } catch (e: any) {
