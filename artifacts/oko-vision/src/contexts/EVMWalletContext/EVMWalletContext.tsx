@@ -1,48 +1,63 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import { ethers } from 'ethers';
-
-// Robinhood Chain public RPC (EVM-compatible)
-const ROBINHOOD_RPC = 'https://rpc.mainnet.chain.robinhood.com';
-const ROBINHOOD_CHAIN_ID = 4663;
+import {
+  createRealWallet,
+  importRealWallet,
+  importFromPrivateKey,
+  getRealBalance,
+  sendRealTransaction,
+  sendTokenTransaction,
+} from '@/utils/wallet';
 
 export interface EVMWallet {
-  address: string;
+  address:      string;
   shortAddress: string;
-  mnemonic: string | null;
-  privateKey: string | null;
+  mnemonic:     string | null;
+  privateKey:   string | null;
+}
+
+export interface TxRecord {
+  hash:      string;
+  to:        string;
+  amount:    string;
+  token:     string;    // 'ETH' or token symbol
+  timestamp: number;
+  status:    'pending' | 'confirmed' | 'failed';
 }
 
 interface EVMWalletContextType {
-  wallet: EVMWallet | null;
-  balance: string | null;          // ETH balance as formatted string
-  balanceUsd: number | null;       // USD value (fetched from price API)
-  ethPrice: number | null;
-  loading: boolean;
-  error: string | null;
-  createNewWallet: () => EVMWallet;
-  importWallet: (phrase: string) => EVMWallet | null;
-  importPrivateKey: (pk: string) => EVMWallet | null;
-  refreshBalance: () => Promise<void>;
-  disconnectWallet: () => void;
+  wallet:       EVMWallet | null;
+  balance:      string | null;
+  balanceUsd:   number | null;
+  ethPrice:     number | null;
+  loading:      boolean;
+  error:        string | null;
+  txHistory:    TxRecord[];
+  createNewWallet:   () => EVMWallet;
+  importWallet:      (phrase: string) => EVMWallet | null;
+  importPrivateKey:  (pk: string) => EVMWallet | null;
+  refreshBalance:    () => Promise<void>;
+  sendETH:           (to: string, amount: string) => Promise<string>;
+  sendToken:         (tokenAddress: string, to: string, amount: string) => Promise<string>;
+  disconnectWallet:  () => void;
 }
 
 const EVMWalletContext = createContext<EVMWalletContextType | null>(null);
 
-const STORAGE_KEY = 'oko-evm-wallet';
+const STORAGE_KEY  = 'oko-evm-wallet';
+const HISTORY_KEY  = 'oko-evm-history';
 
-function short(addr: string) {
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-function saveWallet(w: EVMWallet) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(w));
-}
-
+function short(addr: string) { return `${addr.slice(0, 6)}...${addr.slice(-4)}`; }
+function saveWallet(w: EVMWallet) { localStorage.setItem(STORAGE_KEY, JSON.stringify(w)); }
 function loadWallet(): EVMWallet | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as EVMWallet) : null;
-  } catch { return null; }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null'); } catch { return null; }
+}
+function loadHistory(): TxRecord[] {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]'); } catch { return []; }
+}
+function pushHistory(rec: TxRecord) {
+  const h = loadHistory();
+  h.unshift(rec);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 50)));
 }
 
 export function EVMWalletProvider({ children }: { children: ReactNode }) {
@@ -52,97 +67,104 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
   const [ethPrice,   setEthPrice]   = useState<number | null>(null);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState<string | null>(null);
+  const [txHistory,  setTxHistory]  = useState<TxRecord[]>(loadHistory);
 
-  // ── helpers ──────────────────────────────────────────────────────
-  function buildWallet(raw: ethers.HDNodeWallet | ethers.Wallet): EVMWallet {
-    return {
-      address:      raw.address,
-      shortAddress: short(raw.address),
-      mnemonic:     (raw as ethers.HDNodeWallet).mnemonic?.phrase ?? null,
-      privateKey:   raw.privateKey,
-    };
-  }
+  // ── helpers ────────────────────────────────────────────────────────
+  function applyWallet(w: EVMWallet) { saveWallet(w); setWallet(w); }
 
-  // ── public actions ───────────────────────────────────────────────
+  // ── wallet creation / import ────────────────────────────────────────
   const createNewWallet = (): EVMWallet => {
-    const raw = ethers.Wallet.createRandom();
-    const w   = buildWallet(raw);
-    saveWallet(w);
-    setWallet(w);
+    const raw = createRealWallet();
+    const w: EVMWallet = { address: raw.address, shortAddress: short(raw.address), mnemonic: raw.mnemonic, privateKey: raw.privateKey };
+    applyWallet(w);
     return w;
   };
 
   const importWallet = (phrase: string): EVMWallet | null => {
     try {
-      const raw = ethers.Wallet.fromPhrase(phrase.trim());
-      const w   = buildWallet(raw);
-      saveWallet(w);
-      setWallet(w);
+      const raw = importRealWallet(phrase);
+      const w: EVMWallet = { address: raw.address, shortAddress: short(raw.address), mnemonic: raw.mnemonic, privateKey: raw.privateKey };
+      applyWallet(w);
       return w;
-    } catch {
-      setError('Неверная мнемоническая фраза');
-      return null;
-    }
+    } catch (e: any) { setError(e.message); return null; }
   };
 
   const importPrivateKey = (pk: string): EVMWallet | null => {
     try {
-      const raw = new ethers.Wallet(pk.trim());
-      const w: EVMWallet = {
-        address:      raw.address,
-        shortAddress: short(raw.address),
-        mnemonic:     null,
-        privateKey:   raw.privateKey,
-      };
-      saveWallet(w);
-      setWallet(w);
+      const raw = importFromPrivateKey(pk);
+      const w: EVMWallet = { address: raw.address, shortAddress: short(raw.address), mnemonic: null, privateKey: raw.privateKey };
+      applyWallet(w);
       return w;
-    } catch {
-      setError('Неверный приватный ключ');
-      return null;
-    }
+    } catch (e: any) { setError(e.message); return null; }
   };
 
+  // ── balance refresh ─────────────────────────────────────────────────
   const refreshBalance = useCallback(async () => {
     if (!wallet) return;
     setLoading(true);
     setError(null);
     try {
-      // ETH price (CoinGecko public API, no key)
-      const priceRes = await fetch(
-        'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd'
-      );
+      // ETH price from CoinGecko (public, no key)
+      const priceRes = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd');
       if (priceRes.ok) {
         const pd = await priceRes.json();
-        setEthPrice(pd.ethereum?.usd ?? null);
+        const p = pd?.ethereum?.usd ?? null;
+        setEthPrice(p);
+        const bal = await getRealBalance(wallet.address);
+        setBalance(bal);
+        if (p) setBalanceUsd(parseFloat(bal) * p);
+      } else {
+        const bal = await getRealBalance(wallet.address);
+        setBalance(bal);
       }
-
-      // Balance via Robinhood RPC
-      const provider = new ethers.JsonRpcProvider(ROBINHOOD_RPC, {
-        name: 'robinhood',
-        chainId: ROBINHOOD_CHAIN_ID,
-      });
-      const raw = await provider.getBalance(wallet.address);
-      const fmt = ethers.formatEther(raw);
-      setBalance(fmt);
-      if (ethPrice) setBalanceUsd(parseFloat(fmt) * ethPrice);
     } catch (e: any) {
-      // Fallback: show 0, set error for UI
       setBalance('0.0');
-      setError('RPC недоступен — баланс может быть неточным');
+      setError('RPC недоступен — данные могут быть устаревшими');
     } finally {
       setLoading(false);
     }
-  }, [wallet, ethPrice]);
+  }, [wallet]);
 
-  const disconnectWallet = () => {
-    localStorage.removeItem(STORAGE_KEY);
-    setWallet(null);
-    setBalance(null);
-    setBalanceUsd(null);
+  // ── send ETH ────────────────────────────────────────────────────────
+  const sendETH = async (to: string, amount: string): Promise<string> => {
+    if (!wallet?.privateKey) throw new Error('Нет приватного ключа');
+    setLoading(true);
+    try {
+      const hash = await sendRealTransaction(wallet.privateKey, to, amount);
+      const rec: TxRecord = { hash, to, amount, token: 'ETH', timestamp: Date.now(), status: 'confirmed' };
+      pushHistory(rec);
+      setTxHistory(loadHistory());
+      await refreshBalance();
+      return hash;
+    } catch (e: any) {
+      throw new Error(e.message ?? 'Ошибка транзакции');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // ── init ─────────────────────────────────────────────────────────
+  // ── send ERC-20 token ────────────────────────────────────────────────
+  const sendToken = async (tokenAddress: string, to: string, amount: string): Promise<string> => {
+    if (!wallet?.privateKey) throw new Error('Нет приватного ключа');
+    setLoading(true);
+    try {
+      const hash = await sendTokenTransaction(wallet.privateKey, tokenAddress, to, amount);
+      const rec: TxRecord = { hash, to, amount, token: tokenAddress, timestamp: Date.now(), status: 'confirmed' };
+      pushHistory(rec);
+      setTxHistory(loadHistory());
+      return hash;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── disconnect ────────────────────────────────────────────────────────
+  const disconnectWallet = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setWallet(null); setBalance(null); setBalanceUsd(null); setTxHistory([]);
+  };
+
+  // ── init ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const saved = loadWallet();
     if (saved) setWallet(saved);
@@ -155,9 +177,9 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
 
   return (
     <EVMWalletContext.Provider value={{
-      wallet, balance, balanceUsd, ethPrice, loading, error,
+      wallet, balance, balanceUsd, ethPrice, loading, error, txHistory,
       createNewWallet, importWallet, importPrivateKey,
-      refreshBalance, disconnectWallet,
+      refreshBalance, sendETH, sendToken, disconnectWallet,
     }}>
       {children}
     </EVMWalletContext.Provider>
