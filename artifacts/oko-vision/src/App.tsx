@@ -8,6 +8,8 @@ import { BalanceProvider } from "@/context/BalanceContext";
 import { initTheme } from "@/lib/themes";
 import { saveRefCode, registerReferral, ensureRefLinkRegistered } from "@/lib/referral";
 import PositionMonitor from "@/components/PositionMonitor";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext/AuthContext";
+import Login from "@/pages/Login/Login";
 
 // Eager load only the home page — everything else is lazy (separate JS chunk)
 import Home from "@/pages/Home";
@@ -100,24 +102,35 @@ function ReferralBridge() {
   return null;
 }
 
-function App() {
+function AppContent() {
+  const { isAuthenticated } = useAuth();
   useEffect(() => { initTheme(); }, []);
 
+  if (!isAuthenticated) return <Login />;
+
+  return (
+    <SolanaWalletProvider>
+      <OkoWalletProvider>
+        <BalanceProvider>
+          <TradingProvider>
+            <PositionMonitor />
+            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+              <ReferralBridge />
+              <Router />
+            </WouterRouter>
+          </TradingProvider>
+        </BalanceProvider>
+      </OkoWalletProvider>
+    </SolanaWalletProvider>
+  );
+}
+
+function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <SolanaWalletProvider>
-        <OkoWalletProvider>
-          <BalanceProvider>
-            <TradingProvider>
-              <PositionMonitor />
-              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-                <ReferralBridge />
-                <Router />
-              </WouterRouter>
-            </TradingProvider>
-          </BalanceProvider>
-        </OkoWalletProvider>
-      </SolanaWalletProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

@@ -495,3 +495,11 @@ button:active {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
 }
+
+/* ── Auth / Login fire effects ─────────────────────────────────── */
+.fire-glow {
+  box-shadow:
+    0 0 30px rgba(255, 100, 0, 0.12),
+    0 0 80px rgba(255, 80, 0, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
