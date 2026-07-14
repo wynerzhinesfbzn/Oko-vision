@@ -8,11 +8,6 @@ import { BalanceProvider } from "@/context/BalanceContext";
 import { initTheme } from "@/lib/themes";
 import { saveRefCode, registerReferral, ensureRefLinkRegistered } from "@/lib/referral";
 import PositionMonitor from "@/components/PositionMonitor";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext/AuthContext";
-import { EVMWalletProvider, useEVMWallet } from "@/contexts/EVMWalletContext/EVMWalletContext";
-import Login from "@/pages/Login/Login";
-import Onboarding from "@/pages/Onboarding/Onboarding";
-import Dashboard from "@/pages/Dashboard/Dashboard";
 
 // Eager load only the home page — everything else is lazy (separate JS chunk)
 import Home from "@/pages/Home";
@@ -105,43 +100,24 @@ function ReferralBridge() {
   return null;
 }
 
-function AppInner() {
-  const { isAuthenticated } = useAuth();
-  const { wallet } = useEVMWallet();
+function App() {
   useEffect(() => { initTheme(); }, []);
 
-  // 1. Not logged in → fire-themed Login screen
-  if (!isAuthenticated) return <Login />;
-
-  // 2. Logged in but no EVM wallet yet → Onboarding (create/import)
-  if (!wallet) return <Onboarding />;
-
-  // 3. Fully set up → Robinhood-style Dashboard
-  return (
-    <SolanaWalletProvider>
-      <OkoWalletProvider>
-        <BalanceProvider>
-          <TradingProvider>
-            <PositionMonitor />
-            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-              <ReferralBridge />
-            </WouterRouter>
-            <Dashboard />
-          </TradingProvider>
-        </BalanceProvider>
-      </OkoWalletProvider>
-    </SolanaWalletProvider>
-  );
-}
-
-function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <EVMWalletProvider>
-          <AppInner />
-        </EVMWalletProvider>
-      </AuthProvider>
+      <SolanaWalletProvider>
+        <OkoWalletProvider>
+          <BalanceProvider>
+            <TradingProvider>
+              <PositionMonitor />
+              <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+                <ReferralBridge />
+                <Router />
+              </WouterRouter>
+            </TradingProvider>
+          </BalanceProvider>
+        </OkoWalletProvider>
+      </SolanaWalletProvider>
     </QueryClientProvider>
   );
 }
