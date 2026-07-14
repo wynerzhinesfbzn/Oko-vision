@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthState, AuthMethod } from './types';
-import { startAuthentication } from '@simplewebauthn/browser';
+import { startAuthentication, startRegistration, browserSupportsWebAuthn } from '@simplewebauthn/browser';
 
 interface AuthContextType extends AuthState {
   login: (method: AuthMethod, credentials: Record<string, string>) => Promise<boolean>;

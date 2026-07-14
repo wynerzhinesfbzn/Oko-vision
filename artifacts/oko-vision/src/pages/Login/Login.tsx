@@ -54,6 +54,17 @@ function Tab({ id: _id, active, disabled, icon, label, onClick }: TabProps) {
   );
 }
 
+/* ─── Per-method error messages ───────────────────────────────── */
+function errorMsg(method: AuthMethod): string {
+  switch (method) {
+    case 'password':  return 'Неверный пароль. Минимум 6 символов.';
+    case 'mnemonic':  return 'Неверная фраза. Нужно 12 слов через пробел.';
+    case 'biometrics':return 'Биометрия отклонена или недоступна.';
+    case 'crypto':    return 'Ошибка аппаратного ключа.';
+    default:          return 'Ошибка входа.';
+  }
+}
+
 /* ─── Main Login screen ────────────────────────────────────────── */
 export default function Login() {
   const { login, biometricsSupported } = useAuth();

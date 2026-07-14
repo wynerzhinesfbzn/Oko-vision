@@ -10,6 +10,7 @@ import { saveRefCode, registerReferral, ensureRefLinkRegistered } from "@/lib/re
 import PositionMonitor from "@/components/PositionMonitor";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext/AuthContext";
 import Login from "@/pages/Login/Login";
+import Dashboard from "@/pages/Dashboard/Dashboard";
 
 // Eager load only the home page — everything else is lazy (separate JS chunk)
 import Home from "@/pages/Home";
@@ -116,8 +117,8 @@ function AppContent() {
             <PositionMonitor />
             <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
               <ReferralBridge />
-              <Router />
             </WouterRouter>
+            <Dashboard />
           </TradingProvider>
         </BalanceProvider>
       </OkoWalletProvider>
