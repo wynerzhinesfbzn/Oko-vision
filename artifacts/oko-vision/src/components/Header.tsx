@@ -118,6 +118,11 @@ function SlideMenu({ open, onClose, onNav, location }: SlideMenuProps) {
 
   const NAV_SECONDARY: NavItem[] = [
     {
+      label: "🔥 RH Chain Wallet", sublabel: "EVM-кошелёк · Robinhood Chain",
+      path: "/robinhood", icon: <span style={{ fontSize: 18 }}>🔥</span>,
+      badge: "REAL", badgeColor: "#00c853",
+    },
+    {
       label: "Настройки", sublabel: "Кошелёк и параметры",
       path: "/wallet", icon: <Settings size={18} />,
     },
