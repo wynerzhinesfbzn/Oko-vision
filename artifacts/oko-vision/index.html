@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <title>OKO Vision Terminal — Your Trusted Gateway to Infinite Gains</title>
+    <meta name="description" content="Built on absolute trust. Designed for every trader's success. Secure, powerful, personal." />
+    <meta name="theme-color" content="#080808" />
+    <!-- Disable all browser auto-translation (Google Translate, Samsung, etc.) -->
+    <meta name="google" content="notranslate" />
+    <meta http-equiv="Content-Language" content="en" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="OKO Vision" />
+    <meta property="og:title" content="OKO Vision Terminal" />
+    <meta property="og:description" content="Your Trusted Gateway to Infinite Gains" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="dns-prefetch" href="https://api.dexscreener.com" />
+    <link rel="dns-prefetch" href="https://api.rugcheck.xyz" />
+    <link rel="dns-prefetch" href="https://api.mainnet-beta.solana.com" />
+
+    <!-- Fonts: Bebas Neue (hero display) + Space Grotesk (UI) + Inter (body) -->
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+    <!-- Instant paint: pure black + gold spinner -->
+    <style>
+      body{background:#080808;}
+      #app-loader{
+        position:fixed;inset:0;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;gap:18px;
+        background:#080808;z-index:9999;transition:opacity .3s ease;
+      }
+      #app-loader.hidden{opacity:0;pointer-events:none}
+      .oko-ring{
+        width:44px;height:44px;border-radius:50%;
+        border:1.5px solid rgba(201,168,76,0.15);
+        border-top-color:#C9A84C;
+        animation:spin .8s linear infinite;
+      }
+      .oko-label{
+        font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:600;
+        letter-spacing:.18em;color:rgba(201,168,76,0.50);text-transform:uppercase;
+      }
+      @keyframes spin{to{transform:rotate(360deg)}}
+    </style>
+  </head>
+  <body translate="no" class="notranslate">
+    <div id="app-loader">
+      <div class="oko-ring"></div>
+      <div class="oko-label">OKO VISION</div>
+    </div>
+
+    <div id="root" class="notranslate"></div>
+
+    <script type="module" src="/src/main.tsx"></script>
+
+    <script>
+      window.addEventListener('oko:ready', function() {
+        var el = document.getElementById('app-loader');
+        if (el) { el.classList.add('hidden'); setTimeout(function(){ el.remove(); }, 350); }
+      });
+    </script>
+  </body>
+</html>

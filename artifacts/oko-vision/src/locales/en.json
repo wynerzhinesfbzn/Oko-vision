@@ -1,0 +1,60 @@
+{
+  "app_name": "OKO Vision Terminal",
+  "slogan": "Your Trusted Gateway to Infinite Gains",
+  "sub_slogan": "Built on absolute trust. Designed for every trader's success.",
+  "hero_line1": "ENGINEERED FOR TRADERS,",
+  "hero_line2": "WHO WIN.",
+  "hero_tagline": "EVERY TRADE. EVERY DAY.",
+  "hero_sub": "Precision tools for serious traders. Fast, secure, and built for profit.",
+
+  "wallet": {
+    "title": "Choose Your Access",
+    "subtitle": "Select how you want to connect to OKO Vision Terminal",
+    "create_title": "Create New Wallet",
+    "create_desc": "Get started in seconds. Create a secure Solana wallet with just your email, Google, or Telegram. No seed phrase needed.",
+    "create_badge": "Powered by Privy",
+    "create_btn": "Create New Wallet",
+    "create_sub": "Email · Google · Telegram · Apple",
+    "connect_title": "Connect Existing Wallet",
+    "connect_desc": "Already have a Solana wallet? Connect Phantom, Solflare, Backpack or any other wallet adapter.",
+    "connect_badge": "Self-Custody",
+    "connect_btn": "Connect Wallet",
+    "connect_sub": "Phantom · Solflare · Backpack · More",
+    "secure_note": "256-bit encrypted · Non-custodial · Your keys, your funds",
+    "connecting": "Connecting...",
+    "connected": "Connected",
+    "disconnect": "Disconnect"
+  },
+
+  "lang": {
+    "title": "Choose Language",
+    "subtitle": "Select your preferred language",
+    "continue": "Continue",
+    "en": "English",
+    "ru": "Русский"
+  },
+
+  "nav": {
+    "dashboard": "Dashboard",
+    "markets": "Markets",
+    "portfolio": "Portfolio",
+    "analytics": "Analytics",
+    "trust": "Trust"
+  },
+
+  "metrics": {
+    "volume": "Total Volume",
+    "traders": "Active Traders",
+    "win_rate": "Win Rate",
+    "avg_return": "Avg Return"
+  },
+
+  "dashboard": {
+    "portfolio_value": "Portfolio Value",
+    "today": "today",
+    "live": "LIVE",
+    "portfolio_tab": "Portfolio",
+    "trades_tab": "Trades",
+    "view_report": "View Full Report"
+  }
+}

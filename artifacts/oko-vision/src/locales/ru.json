@@ -1,0 +1,60 @@
+{
+  "app_name": "OKO Vision Terminal",
+  "slogan": "Ваш надёжный путь к бесконечной прибыли",
+  "sub_slogan": "Построено на абсолютном доверии. Создано для успеха каждого трейдера.",
+  "hero_line1": "СОЗДАНО ДЛЯ ТРЕЙДЕРОВ,",
+  "hero_line2": "ЧТОБЫ ПОБЕЖДАТЬ.",
+  "hero_tagline": "КАЖДАЯ СДЕЛКА. КАЖДЫЙ ДЕНЬ.",
+  "hero_sub": "Инструменты точности для серьёзных трейдеров. Быстро, безопасно, прибыльно.",
+
+  "wallet": {
+    "title": "Выберите доступ",
+    "subtitle": "Выберите способ подключения к OKO Vision Terminal",
+    "create_title": "Создать новый кошелёк",
+    "create_desc": "Начните за секунды. Создайте защищённый кошелёк Solana через email, Google или Telegram. Без сид-фразы.",
+    "create_badge": "На базе Privy",
+    "create_btn": "Создать кошелёк",
+    "create_sub": "Email · Google · Telegram · Apple",
+    "connect_title": "Подключить кошелёк",
+    "connect_desc": "Уже есть кошелёк Solana? Подключите Phantom, Solflare, Backpack или любой другой совместимый кошелёк.",
+    "connect_badge": "Самохранение",
+    "connect_btn": "Подключить кошелёк",
+    "connect_sub": "Phantom · Solflare · Backpack · Другие",
+    "secure_note": "256-бит шифрование · Некастодиальный · Ваши ключи, ваши средства",
+    "connecting": "Подключение...",
+    "connected": "Подключено",
+    "disconnect": "Отключить"
+  },
+
+  "lang": {
+    "title": "Выберите язык",
+    "subtitle": "Выберите предпочитаемый язык",
+    "continue": "Продолжить",
+    "en": "English",
+    "ru": "Русский"
+  },
+
+  "nav": {
+    "dashboard": "Дашборд",
+    "markets": "Рынки",
+    "portfolio": "Портфель",
+    "analytics": "Аналитика",
+    "trust": "Доверие"
+  },
+
+  "metrics": {
+    "volume": "Объём торгов",
+    "traders": "Активных трейдеров",
+    "win_rate": "Процент побед",
+    "avg_return": "Средн. доходность"
+  },
+
+  "dashboard": {
+    "portfolio_value": "Стоимость портфеля",
+    "today": "сегодня",
+    "live": "LIVE",
+    "portfolio_tab": "Портфель",
+    "trades_tab": "Сделки",
+    "view_report": "Полный отчёт"
+  }
+}

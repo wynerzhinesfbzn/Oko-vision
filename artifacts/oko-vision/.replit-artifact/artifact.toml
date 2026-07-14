@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "OKO Vision Terminal"
+version = "1.0.0"
+id = "artifacts/oko-vision"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22259
+
+[services.development]
+run = "pnpm --filter @workspace/oko-vision run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/oko-vision", "run", "build" ]
+publicDir = "artifacts/oko-vision/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22259"
+BASE_PATH = "/"
