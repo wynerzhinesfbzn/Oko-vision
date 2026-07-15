@@ -100,7 +100,7 @@ export function EVMWalletProvider({ children }: { children: ReactNode }) {
   useEffect(() => { if (address) refreshBalance(); }, [address]);
 
   /* ── persist helpers ────────────────────────────────────────── */
-  async function storeWallet(wallet: ethers.Wallet, password: string) {
+  async function storeWallet(wallet: ethers.Wallet | ethers.HDNodeWallet, password: string) {
     const payload = await encryptPrivateKey(wallet.privateKey, password);
     localStorage.setItem(SK_ADDRESS,   wallet.address);
     localStorage.setItem(SK_ENCRYPTED, JSON.stringify(payload));

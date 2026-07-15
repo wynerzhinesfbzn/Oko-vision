@@ -400,7 +400,7 @@ export default function PasswordSignModal({
           </div>
 
           {/* One-time password unlock (only for old wallets without rawPrivKey) */}
-          {needsUnlock && status !== "success" && (
+          {needsUnlock && (
             <div className="mb-4">
               <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl"
                 style={{ background: "rgba(201,168,76,0.04)", border: "1px solid rgba(201,168,76,0.14)" }}>
@@ -496,7 +496,7 @@ export default function PasswordSignModal({
           )}
 
           {/* Action button */}
-          {status !== "success" && (
+          {(
             <button
               onClick={handleSign}
               disabled={!canSubmit}

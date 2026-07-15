@@ -60,10 +60,10 @@ router.post("/fee", async (req, res) => {
   }
   try {
     const signature = await broadcastTx(tx);
-    res.json({ signature });
+    return res.json({ signature });
   } catch (e: any) {
     console.error("[FeeRoute] broadcast failed:", e.message);
-    res.status(502).json({ error: e.message });
+    return res.status(502).json({ error: e.message });
   }
 });
 

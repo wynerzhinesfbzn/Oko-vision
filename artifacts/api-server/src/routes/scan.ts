@@ -191,7 +191,7 @@ async function scanSolana(): Promise<PairData[]> {
 
     // Sources 4-15: parallel DexScreener search queries
     ...SOLANA_SEARCH_TERMS.map((term) => searchPairs(term, "solana")),
-  ].map((p) => p.then((r) => { allRaw.push(...r); }).catch(() => {})));
+  ].map((p) => p.then((r) => { if (Array.isArray(r)) allRaw.push(...r); }).catch(() => {})));
 
   return dedup(allRaw).filter((p) => p.price > 0 && p.liquidity >= 5_000);
 }

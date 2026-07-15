@@ -20,6 +20,7 @@ export const PRIVY_APP_ID = "clrk0f4mb034dp40fy8nz8p9y"; // placeholder
 let PrivyProvider: React.ComponentType<{ appId: string; config?: object; children: ReactNode }> | null = null;
 
 try {
+  // @ts-expect-error — optional dependency, not installed
   const privy = await import("@privy-io/react-auth");
   PrivyProvider = privy.PrivyProvider as any;
 } catch {

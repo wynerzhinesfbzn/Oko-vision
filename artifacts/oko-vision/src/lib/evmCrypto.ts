@@ -12,7 +12,7 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
     "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
   );
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 210_000, hash: "SHA-256" },
+    { name: "PBKDF2", salt: new Uint8Array(salt.buffer as ArrayBuffer), iterations: 210_000, hash: "SHA-256" },
     baseKey,
     { name: "AES-GCM", length: 256 },
     false,
@@ -20,8 +20,9 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   );
 }
 
-function toB64(buf: ArrayBuffer) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+function toB64(buf: ArrayBuffer | Uint8Array): string {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return btoa(String.fromCharCode(...u8));
 }
 function fromB64(s: string) {
   return Uint8Array.from(atob(s), c => c.charCodeAt(0));
