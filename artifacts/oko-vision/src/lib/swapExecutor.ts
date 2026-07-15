@@ -288,10 +288,19 @@ export async function executeSwap(params: SwapParams): Promise<SwapResult> {
     console.warn("[swapExecutor] confirmTransaction timed out, returning optimistically:", txHash);
   }
 
-  // 8 — Send 1% platform fee as a separate SOL transfer (fire-and-forget).
-  //     Only possible for generated wallets (we have the keypair).
-  //     Uses independent public RPC endpoints to avoid rate-limiting after main swap.
-  if (keypair) {
+  // 8 — Collect 1% platform fee.
+  //
+  //  • SELL (token → SOL, outputMint = SOL_MINT):
+  //      Jupiter already deducted the fee from SOL output via the feeAccount param
+  //      embedded in the swap transaction. Works for ALL wallet types. Skip here.
+  //
+  //  • BUY (SOL → token, inputMint = SOL_MINT):
+  //      Jupiter's fee account would need a per-token ATA — impractical for 148+ tokens.
+  //      Instead, send a separate SOL transfer. Only possible for generated wallets
+  //      (we have the keypair). Adapter wallets (Phantom) cannot be charged here
+  //      without an additional popup — accepted gap.
+  const isSell = outputMint === SOL_MINT;
+  if (!isSell && keypair) {
     sendFeeTransfer(keypair, feeLamports).catch(e =>
       console.error("[FeeTransfer] all retries failed:", e?.message),
     );

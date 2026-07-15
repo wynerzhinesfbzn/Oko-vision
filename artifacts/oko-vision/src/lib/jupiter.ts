@@ -64,6 +64,7 @@ export async function getJupiterQuote(
   amount: number,          // in smallest units (lamports, token base units)
   slippageBps = 50,
 ): Promise<JupiterQuote> {
+  const isSell = outputMint === SOL_MINT;
   const params = new URLSearchParams({
     inputMint,
     outputMint,
@@ -71,6 +72,10 @@ export async function getJupiterQuote(
     slippageBps: String(slippageBps),
     onlyDirectRoutes: "false",
     asLegacyTransaction: "false",
+    // For sells (token→SOL) Jupiter can collect the fee directly from SOL output.
+    // For buys (SOL→token) the fee account would need an ATA for every token —
+    // impractical, so we collect it via a separate SOL transfer instead.
+    ...(isSell ? { platformFeeBps: String(PLATFORM_FEE_BPS) } : {}),
   });
 
   // Try server proxy first, then direct
@@ -106,12 +111,19 @@ export async function getSwapTransaction(
   const prioritizationFeeLamports = priorityFeeSol != null
     ? Math.round(priorityFeeSol * 1_000_000_000) // SOL → lamports
     : "auto";
-  const body = {
+
+  // For sells (token → SOL): Jupiter collects 1% fee from SOL output directly.
+  // This works for ALL wallet types (generated keypair AND Phantom/adapter).
+  // For buys (SOL → token): fee account needs per-token ATA — handled separately in swapExecutor.
+  const isSell = quote.outputMint === SOL_MINT;
+
+  const body: Record<string, unknown> = {
     quoteResponse: quote,
     userPublicKey,
     wrapAndUnwrapSol: true,
     dynamicComputeUnitLimit: true,
     prioritizationFeeLamports,
+    ...(isSell ? { feeAccount: PLATFORM_FEE_ACCOUNT } : {}),
   };
 
   // Try server proxy first, then direct
