@@ -93,16 +93,17 @@ type Network = "solana" | "robinhood";
  * All strategies use their own mcapMin + liquidityMin as the screener's
  * min filters; mcapMax and other signal filters are applied client-side
  * by tokenMatchesStrategy().
+ *
+ * NOTE: profile=0 avoids Cloudflare bot detection on some chains (e.g. Robinhood).
  */
 function getScreenerUrl(strategy: Strategy, network: Network): string {
-  const chain   = network;                                       // "solana" | "robinhood"
   const dexPart = network === "solana" ? "&dexIds=pumpswap" : ""; // Solana: pumpswap only
   const minLiq  = Math.round(strategy.liquidityMin);
   const minMcap = Math.round(strategy.mcapMin);
   return (
     `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc` +
-    `&chainIds=${chain}${dexPart}` +
-    `&minLiq=${minLiq}&minMarketCap=${minMcap}&profile=1`
+    `&chainIds=${network}${dexPart}` +
+    `&minLiq=${minLiq}&minMarketCap=${minMcap}&profile=0`
   );
 }
 
@@ -142,9 +143,9 @@ function parsePairs(pairs: any[], defaultDex: string): ScanResult[] {
 }
 
 /**
- * Fetch tokens via DexScreener screener (Solana only).
- * URL is built from strategy parameters so each strategy queries
- * its own mcap/liq range directly from DexScreener trending screener.
+ * Fetch tokens via DexScreener screener for any network.
+ * URL is built from strategy parameters (mcapMin + liquidityMin).
+ * profile=0 avoids Cloudflare bot-detection on smaller chains (e.g. Robinhood).
  */
 async function fetchScreenerTokens(screenerUrl: string): Promise<ScanResult[]> {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -152,21 +153,7 @@ async function fetchScreenerTokens(screenerUrl: string): Promise<ScanResult[]> {
   const res    = await fetch(apiUrl, { signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Screener API ${res.status}`);
   const data: { pairs?: any[] } = await res.json();
-  return parsePairs(data.pairs ?? [], "pumpswap");
-}
-
-/**
- * Fetch Robinhood tokens via the generic /api/scan endpoint.
- * DexScreener screener doesn't index Robinhood Chain (returns 0),
- * so we fall back to the chain-native scan that works.
- */
-async function fetchRobinhoodTokens(): Promise<ScanResult[]> {
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const res = await fetch(`${origin}/api/scan?chain=robinhood&type=all`, {
-    signal: AbortSignal.timeout(45_000),
-  });
-  if (!res.ok) throw new Error(`Scan API ${res.status}`);
-  const data: { pairs?: any[] } = await res.json();
+  // Use dexId from pair data (pumpswap for Solana, uniswap for Robinhood, etc.)
   return parsePairs(data.pairs ?? [], "unknown");
 }
 
@@ -399,11 +386,8 @@ function StrategyPanel({ strategy, tokens, loading, onBuy }: {
 
 const NETWORK_LABEL: Record<Network, { name: string; icon: string; color: string; desc: string }> = {
   solana:    { name: "Solana",         icon: "◎", color: "#9945FF", desc: "9 стратегий · DexScreener Screener · Jupiter V6" },
-  robinhood: { name: "Robinhood Chain",icon: "🔥", color: "#00c853", desc: "EVM · Chain ID 4663 · Chain-native scan" },
+  robinhood: { name: "Robinhood Chain",icon: "🔥", color: "#00c853", desc: "EVM · Chain ID 4663 · DexScreener Screener" },
 };
-
-// RH_SCAN_KEY is a fixed key used in screenerCache for Robinhood scan results
-const RH_SCAN_KEY = "__robinhood_scan__";
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -414,78 +398,55 @@ export default function Signals() {
   const [network,  setNetwork]  = useState<Network>("solana");
   const [stratIdx, setStratIdx] = useState(0);
 
-  // Unified token cache:
-  //   Solana: key = DexScreener screener URL (per strategy)
-  //   Robinhood: key = RH_SCAN_KEY (shared across all strategies)
+  // Per-URL screener cache — key is the full screener URL (unique per strategy+network)
   const [screenerCache,   setScreenerCache]   = useState<Record<string, ScanResult[]>>({});
   const [screenerLoading, setScreenerLoading] = useState<Record<string, boolean>>({});
   const [screenerError,   setScreenerError]   = useState<Record<string, string | null>>({});
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const rhLoadedRef     = useRef(false);  // load Robinhood once on first visit
 
   const activeStrategy = STRATEGIES[stratIdx];
-
-  // Determine cache key and token pool for the current strategy + network
-  const currentKey     = network === "robinhood" ? RH_SCAN_KEY : getScreenerUrl(activeStrategy, network);
+  const currentKey     = getScreenerUrl(activeStrategy, network);
   const currentTokens  = screenerCache[currentKey]   ?? [];
   const currentLoading = screenerLoading[currentKey] ?? false;
   const currentError   = screenerError[currentKey]   ?? null;
 
-  /** Load data for a cache key; uses screener for Solana, scan for Robinhood */
-  const loadData = useCallback(async (key: string, net: Network, _strategy?: Strategy) => {
-    setScreenerLoading(prev => ({ ...prev, [key]: true }));
-    setScreenerError(prev => ({ ...prev, [key]: null }));
+  /** Load screener for a URL; skips if already in-flight */
+  const loadData = useCallback(async (url: string) => {
+    setScreenerLoading(prev => ({ ...prev, [url]: true }));
+    setScreenerError(prev => ({ ...prev, [url]: null }));
     try {
-      const t = net === "robinhood"
-        ? await fetchRobinhoodTokens()
-        : await fetchScreenerTokens(key);   // key IS the screener URL for Solana
-      setScreenerCache(prev => ({ ...prev, [key]: t }));
+      const t = await fetchScreenerTokens(url);
+      setScreenerCache(prev => ({ ...prev, [url]: t }));
       setLastUpdate(new Date());
     } catch (e: any) {
       console.warn("[signals]", e.message);
-      setScreenerError(prev => ({ ...prev, [key]: e.message ?? "Ошибка" }));
+      setScreenerError(prev => ({ ...prev, [url]: e.message ?? "Ошибка" }));
     } finally {
-      setScreenerLoading(prev => ({ ...prev, [key]: false }));
+      setScreenerLoading(prev => ({ ...prev, [url]: false }));
     }
   }, []);
 
-  // Solana: load screener for current strategy when tab changes; 90s auto-refresh
+  // On strategy or network change: load screener for that combination + 90s auto-refresh
   useEffect(() => {
-    if (network !== "solana") return;
     const url = getScreenerUrl(activeStrategy, network);
-    loadData(url, network, activeStrategy);
+    loadData(url);
 
     if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
-    refreshTimerRef.current = setInterval(() => loadData(url, network, activeStrategy), 90_000);
+    refreshTimerRef.current = setInterval(() => loadData(url), 90_000);
     return () => { if (refreshTimerRef.current) clearInterval(refreshTimerRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stratIdx, network]);
-
-  // Robinhood: load once when network is first opened; 45s auto-refresh
-  useEffect(() => {
-    if (network !== "robinhood") return;
-    if (!rhLoadedRef.current) {
-      rhLoadedRef.current = true;
-      loadData(RH_SCAN_KEY, "robinhood");
-    }
-    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
-    refreshTimerRef.current = setInterval(() => loadData(RH_SCAN_KEY, "robinhood"), 45_000);
-    return () => { if (refreshTimerRef.current) clearInterval(refreshTimerRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [network]);
 
   const handleBuy = (token: ScanResult) => {
     navigate(`/trading?mint=${token.mint}&symbol=${encodeURIComponent(token.symbol)}&price=${token.price}`);
   };
 
-  // Match counts per strategy for current network:
-  //   Solana  → each strategy uses its own cached screener result
-  //   Robinhood → all strategies share rhTokens from scan
+  // Match counts per strategy — each strategy has its own screener cache entry
   const matchCounts = STRATEGIES.map((s) => {
-    const key  = network === "robinhood" ? RH_SCAN_KEY : getScreenerUrl(s, network);
-    const pool = screenerCache[key] ?? [];
+    const url  = getScreenerUrl(s, network);
+    const pool = screenerCache[url] ?? [];
     return pool.filter(t => tokenMatchesStrategy(t, s)).length;
   });
   const totalSignals = matchCounts.reduce((a, b) => a + b, 0);
@@ -520,7 +481,7 @@ export default function Signals() {
               </div>
             )}
             <button
-              onClick={() => loadData(currentKey, network, activeStrategy)}
+              onClick={() => loadData(currentKey)}
               disabled={currentLoading}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 12, background: "rgba(201,168,76,0.08)", border: "1px solid rgba(201,168,76,0.25)", color: "#C9A84C", fontSize: 11, fontWeight: 700, cursor: currentLoading ? "not-allowed" : "pointer", opacity: currentLoading ? 0.5 : 1 }}
             >
@@ -626,7 +587,7 @@ export default function Signals() {
                 </span>
               </div>
               <button
-                onClick={() => loadData(currentKey, network, activeStrategy)}
+                onClick={() => loadData(currentKey)}
                 disabled={currentLoading}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, background: `${rc}10`, border: `1px solid ${rc}30`, color: rc, fontSize: 10, fontWeight: 700, cursor: currentLoading ? "not-allowed" : "pointer", opacity: currentLoading ? 0.5 : 1 }}
               >
@@ -643,7 +604,7 @@ export default function Signals() {
             <AlertTriangle size={30} color="#FF4D5E" />
             <span style={{ color: "#FF4D5E", fontSize: 14, fontWeight: 700 }}>Ошибка загрузки данных</span>
             <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 11 }}>{currentError}</span>
-            <button onClick={() => loadData(currentKey, network, activeStrategy)} style={{ marginTop: 8, padding: "9px 22px", borderRadius: 11, background: "rgba(255,77,94,0.10)", border: "1px solid rgba(255,77,94,0.28)", color: "#FF4D5E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            <button onClick={() => loadData(currentKey)} style={{ marginTop: 8, padding: "9px 22px", borderRadius: 11, background: "rgba(255,77,94,0.10)", border: "1px solid rgba(255,77,94,0.28)", color: "#FF4D5E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
               Повторить
             </button>
           </div>
