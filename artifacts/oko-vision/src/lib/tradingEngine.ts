@@ -378,6 +378,8 @@ export async function fetchScanResults(type: "all" | "boosted" | "latest" = "all
         aiScore:            score,
         aiSignal:           signal,
         dexScreenerUrl:     p.dexScreenerUrl ?? "",
+        pairCreatedAt:      p.pairCreatedAt ? Number(p.pairCreatedAt) : null,
+        dexId:              p.dexId ?? "unknown",
       };
     });
 }

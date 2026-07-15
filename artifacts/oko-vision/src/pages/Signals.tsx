@@ -86,33 +86,42 @@ function computeScore(t: Pick<ScanResult, "change5m"|"change1h"|"change24h"|"vol
 
 // ── API fetch ─────────────────────────────────────────────────────────────────
 
-// DexScreener screener URL for Ultra Safe Post-Migration strategy
-const ULTRA_SAFE_SCREENER_URL =
-  "https://dexscreener.com/?rankBy=trendingScoreH6&order=desc" +
-  "&chainIds=solana&dexIds=pumpswap&minLiq=50000&minMarketCap=800000&minAge=20&profile=1";
+type Network = "solana" | "robinhood";
 
-/** Fetch pair data via the headless-browser screener endpoint (for Ultra Safe only) */
-async function fetchScreenerTokens(): Promise<ScanResult[]> {
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const url = `${origin}/api/screener?url=${encodeURIComponent(ULTRA_SAFE_SCREENER_URL)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`Screener API ${res.status}`);
-  const data = await res.json();
-  const pairs: any[] = data.pairs ?? [];
+/**
+ * Build a DexScreener screener URL for a given strategy + network.
+ * All strategies use their own mcapMin + liquidityMin as the screener's
+ * min filters; mcapMax and other signal filters are applied client-side
+ * by tokenMatchesStrategy().
+ */
+function getScreenerUrl(strategy: Strategy, network: Network): string {
+  const chain   = network;                                       // "solana" | "robinhood"
+  const dexPart = network === "solana" ? "&dexIds=pumpswap" : ""; // Solana: pumpswap only
+  const minLiq  = Math.round(strategy.liquidityMin);
+  const minMcap = Math.round(strategy.mcapMin);
+  return (
+    `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc` +
+    `&chainIds=${chain}${dexPart}` +
+    `&minLiq=${minLiq}&minMarketCap=${minMcap}&profile=1`
+  );
+}
+
+/** Parse raw DexScreener pair objects (returned by /api/screener) into ScanResult[] */
+function parsePairs(pairs: any[], defaultDex: string): ScanResult[] {
   return pairs
     .filter((p) => p.mint && p.price > 0 && p.liquidity > 0)
     .map((p): ScanResult => {
       const { score, signal } = computeScore({
-        change5m: Number(p.change5m ?? 0),
-        change1h: Number(p.change1h ?? 0),
-        change24h: Number(p.change24h ?? 0),
+        change5m:           Number(p.change5m  ?? 0),
+        change1h:           Number(p.change1h  ?? 0),
+        change24h:          Number(p.change24h ?? 0),
         volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
       });
       return {
         mint:               p.mint,
-        symbol:             p.symbol  ?? "?",
-        name:               p.name    ?? "?",
-        imageUrl:           p.imageUrl ?? "",
+        symbol:             p.symbol    ?? "?",
+        name:               p.name      ?? "?",
+        imageUrl:           p.imageUrl  ?? "",
         poolAddress:        p.poolAddress ?? "",
         price:              Number(p.price),
         marketCap:          Number(p.marketCap ?? 0),
@@ -127,50 +136,38 @@ async function fetchScreenerTokens(): Promise<ScanResult[]> {
         aiSignal:  signal,
         dexScreenerUrl: p.dexScreenerUrl ?? "",
         pairCreatedAt:  p.pairCreatedAt ? Number(p.pairCreatedAt) : null,
-        dexId:          p.dexId ?? "pumpswap",
+        dexId:          p.dexId ?? defaultDex,
       };
     });
 }
 
-async function fetchTokens(chain: "solana" | "robinhood"): Promise<ScanResult[]> {
+/**
+ * Fetch tokens via DexScreener screener (Solana only).
+ * URL is built from strategy parameters so each strategy queries
+ * its own mcap/liq range directly from DexScreener trending screener.
+ */
+async function fetchScreenerTokens(screenerUrl: string): Promise<ScanResult[]> {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const res = await fetch(`${origin}/api/scan?chain=${chain}&type=all`, {
-    signal: AbortSignal.timeout(30_000),
+  const apiUrl = `${origin}/api/screener?url=${encodeURIComponent(screenerUrl)}`;
+  const res    = await fetch(apiUrl, { signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`Screener API ${res.status}`);
+  const data: { pairs?: any[] } = await res.json();
+  return parsePairs(data.pairs ?? [], "pumpswap");
+}
+
+/**
+ * Fetch Robinhood tokens via the generic /api/scan endpoint.
+ * DexScreener screener doesn't index Robinhood Chain (returns 0),
+ * so we fall back to the chain-native scan that works.
+ */
+async function fetchRobinhoodTokens(): Promise<ScanResult[]> {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const res = await fetch(`${origin}/api/scan?chain=robinhood&type=all`, {
+    signal: AbortSignal.timeout(45_000),
   });
-  if (!res.ok) throw new Error(`API ${res.status}`);
-  const data = await res.json();
-  const pairs: any[] = data.pairs ?? [];
-  return pairs
-    .filter((p) => p.mint && p.price > 0 && p.liquidity > 0)
-    .map((p): ScanResult => {
-      const { score, signal } = computeScore({
-        change5m: Number(p.change5m ?? 0),
-        change1h: Number(p.change1h ?? 0),
-        change24h: Number(p.change24h ?? 0),
-        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
-      });
-      return {
-        mint:               p.mint,
-        symbol:             p.symbol  ?? "?",
-        name:               p.name    ?? "?",
-        imageUrl:           p.imageUrl ?? "",
-        poolAddress:        p.poolAddress ?? "",
-        price:              Number(p.price),
-        marketCap:          Number(p.marketCap ?? 0),
-        liquidity:          Number(p.liquidity),
-        volume24h:          Number(p.volume24h ?? 0),
-        volume1h:           Number(p.volume1h  ?? 0),
-        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
-        change5m:  Number(p.change5m  ?? 0),
-        change1h:  Number(p.change1h  ?? 0),
-        change24h: Number(p.change24h ?? 0),
-        aiScore:   score,
-        aiSignal:  signal,
-        dexScreenerUrl: p.dexScreenerUrl ?? "",
-        pairCreatedAt:  p.pairCreatedAt ? Number(p.pairCreatedAt) : null,
-        dexId:          p.dexId ?? "unknown",
-      };
-    });
+  if (!res.ok) throw new Error(`Scan API ${res.status}`);
+  const data: { pairs?: any[] } = await res.json();
+  return parsePairs(data.pairs ?? [], "unknown");
 }
 
 // ── Signal Card ───────────────────────────────────────────────────────────────
@@ -400,116 +397,96 @@ function StrategyPanel({ strategy, tokens, loading, onBuy }: {
 
 // ── Network tabs ──────────────────────────────────────────────────────────────
 
-type Network = "solana" | "robinhood";
-
 const NETWORK_LABEL: Record<Network, { name: string; icon: string; color: string; desc: string }> = {
-  solana:    { name: "Solana",         icon: "◎", color: "#9945FF", desc: "9 стратегий · DexScreener · Jupiter V6" },
-  robinhood: { name: "Robinhood Chain",icon: "🔥", color: "#00c853", desc: "EVM · Chain ID 4663 · DEX токены" },
+  solana:    { name: "Solana",         icon: "◎", color: "#9945FF", desc: "9 стратегий · DexScreener Screener · Jupiter V6" },
+  robinhood: { name: "Robinhood Chain",icon: "🔥", color: "#00c853", desc: "EVM · Chain ID 4663 · Chain-native scan" },
 };
+
+// RH_SCAN_KEY is a fixed key used in screenerCache for Robinhood scan results
+const RH_SCAN_KEY = "__robinhood_scan__";
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Signals() {
   const [, navigate] = useLocation();
 
-  // Network
-  const [network, setNetwork] = useState<Network>("solana");
-  // Strategy tab
+  // Network + strategy
+  const [network,  setNetwork]  = useState<Network>("solana");
   const [stratIdx, setStratIdx] = useState(0);
-  // Tokens per network
-  const [solTokens, setSolTokens]           = useState<ScanResult[]>([]);
-  const [rhTokens,  setRhTokens]            = useState<ScanResult[]>([]);
-  const [screenerTokens, setScreenerTokens] = useState<ScanResult[]>([]);
-  const [loadingSol,      setLoadingSol]    = useState(true);
-  const [loadingRh,       setLoadingRh]     = useState(false); // lazy
-  const [loadingScreener, setLoadingScreener] = useState(true);
-  const [errorSol,  setErrorSol]      = useState<string | null>(null);
-  const [errorRh,   setErrorRh]       = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate]   = useState<Date | null>(null);
-  const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
-  const screenerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const loadSolana = useCallback(async (silent = false) => {
-    if (!silent) setLoadingSol(true);
-    setErrorSol(null);
+  // Unified token cache:
+  //   Solana: key = DexScreener screener URL (per strategy)
+  //   Robinhood: key = RH_SCAN_KEY (shared across all strategies)
+  const [screenerCache,   setScreenerCache]   = useState<Record<string, ScanResult[]>>({});
+  const [screenerLoading, setScreenerLoading] = useState<Record<string, boolean>>({});
+  const [screenerError,   setScreenerError]   = useState<Record<string, string | null>>({});
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const rhLoadedRef     = useRef(false);  // load Robinhood once on first visit
+
+  const activeStrategy = STRATEGIES[stratIdx];
+
+  // Determine cache key and token pool for the current strategy + network
+  const currentKey     = network === "robinhood" ? RH_SCAN_KEY : getScreenerUrl(activeStrategy, network);
+  const currentTokens  = screenerCache[currentKey]   ?? [];
+  const currentLoading = screenerLoading[currentKey] ?? false;
+  const currentError   = screenerError[currentKey]   ?? null;
+
+  /** Load data for a cache key; uses screener for Solana, scan for Robinhood */
+  const loadData = useCallback(async (key: string, net: Network, _strategy?: Strategy) => {
+    setScreenerLoading(prev => ({ ...prev, [key]: true }));
+    setScreenerError(prev => ({ ...prev, [key]: null }));
     try {
-      const t = await fetchTokens("solana");
-      setSolTokens(t);
+      const t = net === "robinhood"
+        ? await fetchRobinhoodTokens()
+        : await fetchScreenerTokens(key);   // key IS the screener URL for Solana
+      setScreenerCache(prev => ({ ...prev, [key]: t }));
       setLastUpdate(new Date());
     } catch (e: any) {
-      setErrorSol(e.message ?? "Ошибка загрузки");
+      console.warn("[signals]", e.message);
+      setScreenerError(prev => ({ ...prev, [key]: e.message ?? "Ошибка" }));
     } finally {
-      setLoadingSol(false);
+      setScreenerLoading(prev => ({ ...prev, [key]: false }));
     }
   }, []);
 
-  const loadRobinhood = useCallback(async (silent = false) => {
-    if (!silent) setLoadingRh(true);
-    setErrorRh(null);
-    try {
-      const t = await fetchTokens("robinhood");
-      setRhTokens(t);
-    } catch (e: any) {
-      setErrorRh(e.message ?? "Ошибка загрузки");
-    } finally {
-      setLoadingRh(false);
-    }
-  }, []);
-
-  // Screener: separate load for Ultra Safe strategy (browser-based, ~20s, 90s refresh)
-  const loadScreener = useCallback(async () => {
-    setLoadingScreener(true);
-    try {
-      const t = await fetchScreenerTokens();
-      setScreenerTokens(t);
-    } catch (e: any) {
-      console.warn("[screener]", e.message);
-      // fallback: keep old tokens, don't wipe with error
-    } finally {
-      setLoadingScreener(false);
-    }
-  }, []);
-
-  // Initial load: Solana eagerly, Robinhood lazily when tab opened
+  // Solana: load screener for current strategy when tab changes; 90s auto-refresh
   useEffect(() => {
-    loadSolana();
-    loadScreener();
-    timerRef.current    = setInterval(() => loadSolana(true), 45_000);
-    screenerRef.current = setInterval(() => loadScreener(),   90_000);
-    return () => {
-      if (timerRef.current)    clearInterval(timerRef.current);
-      if (screenerRef.current) clearInterval(screenerRef.current);
-    };
-  }, [loadSolana, loadScreener]);
+    if (network !== "solana") return;
+    const url = getScreenerUrl(activeStrategy, network);
+    loadData(url, network, activeStrategy);
 
-  // Load Robinhood when first selected
-  const rhLoadedRef = useRef(false);
+    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+    refreshTimerRef.current = setInterval(() => loadData(url, network, activeStrategy), 90_000);
+    return () => { if (refreshTimerRef.current) clearInterval(refreshTimerRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stratIdx, network]);
+
+  // Robinhood: load once when network is first opened; 45s auto-refresh
   useEffect(() => {
-    if (network === "robinhood" && !rhLoadedRef.current) {
+    if (network !== "robinhood") return;
+    if (!rhLoadedRef.current) {
       rhLoadedRef.current = true;
-      loadRobinhood();
+      loadData(RH_SCAN_KEY, "robinhood");
     }
-  }, [network, loadRobinhood]);
-
-  const tokens  = network === "solana" ? solTokens : rhTokens;
-  const loading = network === "solana" ? loadingSol : loadingRh;
-  const error   = network === "solana" ? errorSol  : errorRh;
-  const reload  = network === "solana" ? loadSolana : loadRobinhood;
+    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
+    refreshTimerRef.current = setInterval(() => loadData(RH_SCAN_KEY, "robinhood"), 45_000);
+    return () => { if (refreshTimerRef.current) clearInterval(refreshTimerRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network]);
 
   const handleBuy = (token: ScanResult) => {
     navigate(`/trading?mint=${token.mint}&symbol=${encodeURIComponent(token.symbol)}&price=${token.price}`);
   };
 
-  const activeStrategy = STRATEGIES[stratIdx];
-
-  // Ultra Safe uses screener data (pre-filtered by DexScreener); others use scan data
-  const isUltraSafe = network === "solana" && activeStrategy.id === "ultra-safe";
-
-  // Count matches per strategy for current network tokens
-  // Ultra Safe tab shows screener match count
-  const matchCounts = STRATEGIES.map((s, i) => {
-    const src = (network === "solana" && i === 0) ? screenerTokens : tokens;
-    return src.filter(t => tokenMatchesStrategy(t, s)).length;
+  // Match counts per strategy for current network:
+  //   Solana  → each strategy uses its own cached screener result
+  //   Robinhood → all strategies share rhTokens from scan
+  const matchCounts = STRATEGIES.map((s) => {
+    const key  = network === "robinhood" ? RH_SCAN_KEY : getScreenerUrl(s, network);
+    const pool = screenerCache[key] ?? [];
+    return pool.filter(t => tokenMatchesStrategy(t, s)).length;
   });
   const totalSignals = matchCounts.reduce((a, b) => a + b, 0);
 
@@ -526,7 +503,9 @@ export default function Signals() {
               ⚡ Сигналы по стратегиям
             </h1>
             <p style={{ margin: "4px 0 0", color: "rgba(255,255,255,0.28)", fontSize: 11 }}>
-              🔄 Только PumpFun → PumpSwap миграции · Выпускники бондинговой кривой · Ручной вход
+              {network === "solana"
+                ? "🔄 Только PumpFun → PumpSwap миграции · DexScreener Screener · Ручной вход"
+                : "🔥 Robinhood Chain · DexScreener Screener · Ручной вход"}
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
@@ -535,17 +514,17 @@ export default function Signals() {
                 {lastUpdate.toLocaleTimeString("ru-RU")}
               </span>
             )}
-            {!loading && totalSignals > 0 && (
+            {!currentLoading && totalSignals > 0 && (
               <div style={{ padding: "4px 10px", borderRadius: 20, background: "rgba(74,222,128,0.10)", border: "1px solid rgba(74,222,128,0.25)", color: "#4ADE80", fontSize: 10, fontWeight: 700 }}>
                 {totalSignals} сигналов
               </div>
             )}
             <button
-              onClick={() => reload()}
-              disabled={loading}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 12, background: "rgba(201,168,76,0.08)", border: "1px solid rgba(201,168,76,0.25)", color: "#C9A84C", fontSize: 11, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.5 : 1 }}
+              onClick={() => loadData(currentKey, network, activeStrategy)}
+              disabled={currentLoading}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 12, background: "rgba(201,168,76,0.08)", border: "1px solid rgba(201,168,76,0.25)", color: "#C9A84C", fontSize: 11, fontWeight: 700, cursor: currentLoading ? "not-allowed" : "pointer", opacity: currentLoading ? 0.5 : 1 }}
             >
-              <RefreshCw size={12} style={{ animation: loading ? "spin 1s linear infinite" : "none" }} />
+              <RefreshCw size={12} style={{ animation: currentLoading ? "spin 1s linear infinite" : "none" }} />
               Обновить
             </button>
           </div>
@@ -556,10 +535,17 @@ export default function Signals() {
           {(["solana", "robinhood"] as Network[]).map(net => {
             const info = NETWORK_LABEL[net];
             const active = net === network;
+            // Show total cached tokens count for the active network across all strategies
+            const networkTokenCount = active
+              ? STRATEGIES.reduce((sum, s) => {
+                  const url = getScreenerUrl(s, net);
+                  return sum + (screenerCache[url]?.length ?? 0);
+                }, 0)
+              : 0;
             return (
               <button
                 key={net}
-                onClick={() => setNetwork(net)}
+                onClick={() => { setNetwork(net); setStratIdx(0); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 9,
                   padding: "11px 18px", borderRadius: 14,
@@ -574,9 +560,9 @@ export default function Signals() {
                   <div>{info.name}</div>
                   <div style={{ fontSize: 9, fontWeight: 400, color: active ? `${info.color}99` : "rgba(255,255,255,0.2)", marginTop: 1 }}>{info.desc}</div>
                 </div>
-                {active && net === "solana" && !loading && (
+                {active && networkTokenCount > 0 && (
                   <div style={{ marginLeft: 6, background: info.color, color: "#000", borderRadius: 20, padding: "1px 7px", fontSize: 9, fontWeight: 800 }}>
-                    {solTokens.length}
+                    {networkTokenCount}
                   </div>
                 )}
               </button>
@@ -589,8 +575,10 @@ export default function Signals() {
           <style>{`div::-webkit-scrollbar{display:none} @keyframes spin{to{transform:rotate(360deg)}}`}</style>
           {STRATEGIES.map((s, i) => {
             const active = i === stratIdx;
-            const rc = RISK_COLOR[s.riskLevel];
-            const cnt = matchCounts[i];
+            const rc     = RISK_COLOR[s.riskLevel];
+            const cnt    = matchCounts[i];
+            const url    = getScreenerUrl(s, network);
+            const isLoading = screenerLoading[url] ?? false;
             return (
               <button
                 key={s.id}
@@ -610,8 +598,8 @@ export default function Signals() {
                   <span style={{ background: active ? rc : "rgba(255,255,255,0.1)", color: active ? "#000" : "rgba(255,255,255,0.5)", borderRadius: 20, padding: "1px 6px", fontSize: 9, fontWeight: 800 }}>
                     {cnt}
                   </span>
-                ) : loading ? (
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "rgba(255,255,255,0.12)", display: "inline-block" }} />
+                ) : isLoading ? (
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: rc, opacity: 0.4, display: "inline-block", animation: "pulse 1s ease-in-out infinite" }} />
                 ) : null}
               </button>
             );
@@ -622,50 +610,40 @@ export default function Signals() {
       {/* ── Content area ── */}
       <div style={{ maxWidth: 1300, margin: "0 auto", padding: "12px 16px 60px" }}>
 
-        {/* Robinhood Chain — special info bar */}
-        {network === "robinhood" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 16, background: "rgba(0,200,83,0.05)", border: "1px solid rgba(0,200,83,0.18)", borderRadius: 14 }}>
-            <Shield size={16} color="#00c853" />
-            <div>
-              <span style={{ color: "#00c853", fontSize: 12, fontWeight: 700 }}>Robinhood Chain · Chain ID 4663 · EVM</span>
-              <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 10, marginLeft: 10 }}>
-                {loadingRh ? "Сканирование DEX…" : rhTokens.length > 0 ? `${rhTokens.length} токенов найдено` : "Поиск токенов на DexScreener…"}
-              </span>
+        {/* Screener info bar — shown for every strategy */}
+        {(() => {
+          const rc = RISK_COLOR[activeStrategy.riskLevel];
+          const tokenCount = currentTokens.length;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 14, background: `${rc}08`, border: `1px solid ${rc}28`, borderRadius: 12 }}>
+              <Zap size={14} color={rc} />
+              <div style={{ flex: 1 }}>
+                <span style={{ color: rc, fontSize: 11, fontWeight: 700 }}>DexScreener Screener · прямой источник</span>
+                <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10, marginLeft: 10 }}>
+                  {currentLoading
+                    ? "Загрузка через браузер (~20с)…"
+                    : `${tokenCount} токенов · liq≥${fmtNum(activeStrategy.liquidityMin)} · mcap≥${fmtNum(activeStrategy.mcapMin)} · обновление каждые 90с`}
+                </span>
+              </div>
+              <button
+                onClick={() => loadData(currentKey, network, activeStrategy)}
+                disabled={currentLoading}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, background: `${rc}10`, border: `1px solid ${rc}30`, color: rc, fontSize: 10, fontWeight: 700, cursor: currentLoading ? "not-allowed" : "pointer", opacity: currentLoading ? 0.5 : 1 }}
+              >
+                <RefreshCw size={10} style={{ animation: currentLoading ? "spin 1s linear infinite" : "none" }} />
+                Refresh
+              </button>
             </div>
-            <div style={{ marginLeft: "auto" }}>
-              <Zap size={14} color="rgba(0,200,83,0.5)" />
-            </div>
-          </div>
-        )}
-
-        {/* Ultra Safe info bar (screener source) */}
-        {isUltraSafe && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 14, background: "rgba(153,69,255,0.06)", border: "1px solid rgba(153,69,255,0.22)", borderRadius: 12 }}>
-            <Shield size={14} color="#9945FF" />
-            <div style={{ flex: 1 }}>
-              <span style={{ color: "#9945FF", fontSize: 11, fontWeight: 700 }}>DexScreener Screener · прямой источник</span>
-              <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10, marginLeft: 10 }}>
-                {loadingScreener ? "Загрузка через браузер (~20с)…" : `${screenerTokens.length} токенов · обновление каждые 90с`}
-              </span>
-            </div>
-            <button
-              onClick={loadScreener}
-              disabled={loadingScreener}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, background: "rgba(153,69,255,0.08)", border: "1px solid rgba(153,69,255,0.28)", color: "#9945FF", fontSize: 10, fontWeight: 700, cursor: loadingScreener ? "not-allowed" : "pointer", opacity: loadingScreener ? 0.5 : 1 }}
-            >
-              <RefreshCw size={10} style={{ animation: loadingScreener ? "spin 1s linear infinite" : "none" }} />
-              Refresh
-            </button>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Error state */}
-        {!isUltraSafe && error ? (
+        {currentError && currentTokens.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "60px 16px", background: "rgba(255,77,94,0.04)", border: "1px solid rgba(255,77,94,0.2)", borderRadius: 16 }}>
             <AlertTriangle size={30} color="#FF4D5E" />
             <span style={{ color: "#FF4D5E", fontSize: 14, fontWeight: 700 }}>Ошибка загрузки данных</span>
-            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 11 }}>{error}</span>
-            <button onClick={() => reload()} style={{ marginTop: 8, padding: "9px 22px", borderRadius: 11, background: "rgba(255,77,94,0.10)", border: "1px solid rgba(255,77,94,0.28)", color: "#FF4D5E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 11 }}>{currentError}</span>
+            <button onClick={() => loadData(currentKey, network, activeStrategy)} style={{ marginTop: 8, padding: "9px 22px", borderRadius: 11, background: "rgba(255,77,94,0.10)", border: "1px solid rgba(255,77,94,0.28)", color: "#FF4D5E", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
               Повторить
             </button>
           </div>
@@ -673,8 +651,8 @@ export default function Signals() {
           <StrategyPanel
             key={`${network}-${activeStrategy.id}`}
             strategy={activeStrategy}
-            tokens={isUltraSafe ? screenerTokens : tokens}
-            loading={isUltraSafe ? loadingScreener : loading}
+            tokens={currentTokens}
+            loading={currentLoading}
             onBuy={handleBuy}
           />
         )}
