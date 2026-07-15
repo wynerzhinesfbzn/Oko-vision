@@ -232,39 +232,101 @@ async function scanSolana(): Promise<PairData[]> {
 }
 
 // ── Robinhood Chain scan ───────────────────────────────────────────────────────
+//
+// Robinhood Chain is an EVM network (chainId = "robinhood" on DexScreener).
+// Tokens are memecoins with ANY names — not related to "Robinhood" the word.
+// DexScreener has no "list all pairs for chain" endpoint for this chain (/latest/dex/pairs/robinhood → 404).
+//
+// APPROACH:
+//   1. Chain-native sources: token-profiles + token-boosts filtered to chainId="robinhood"
+//      → fetch pair data for discovered addresses via /latest/dex/tokens/
+//   2. Generic broad searches: common memecoin terms that surface RH-chain tokens
+//      (no chain-name keywords — tokens are named anything)
+//   All results filtered to chainId === "robinhood".
+//
+// DATA NOTE: DexScreener only provides vol24h reliably for Robinhood chain.
+//   vol1h / vol6h / vol5m are often 0. Use change24h and vol24h for activity signals.
 
-// Verified search terms: "robin hood" = 26 active, "robinh" = 29 active on robinhood chainId.
-// DexScreener chainId is "robinhood" (confirmed).
-const ROBINHOOD_SEARCH_TERMS = [
-  "robinh",         // 29 active robinhood-chain pairs
-  "robin hood",     // 26 active robinhood-chain pairs
-  "robinhood",      // general search
-  "robinhood chain",// chain-specific
-  "rh chain",       // alternate
+/** Generic meme/culture terms — chain-agnostic, surfaces tokens from any chain */
+const RH_BROAD_TERMS = [
+  "pepe", "ape", "meme", "cat", "dog", "frog", "wif", "ai",
+  "moon", "bull", "bear", "giga", "chad", "inu", "degen",
+  "based", "trump", "elon", "shib", "bonk", "wojak", "sigma",
+  "baby", "coin", "token", "fi", "x",
 ];
 
 async function scanRobinhood(): Promise<PairData[]> {
   const allRaw: PairData[] = [];
 
-  await Promise.all(
-    ROBINHOOD_SEARCH_TERMS.map(async (term) => {
+  const addRhPairs = (rawPairs: any[]) => {
+    for (const p of rawPairs) {
+      if (p.chainId !== "robinhood") continue;
+      const parsed = parsePair(p, "robinhood");
+      if (parsed) allRaw.push(parsed);
+    }
+  };
+
+  await Promise.all([
+    // ── Source 1: Token profiles (chain-native) ────────────────────────────
+    (async () => {
       try {
-        const j = await fetchJSON(`${DEX_BASE}/latest/dex/search?q=${encodeURIComponent(term)}`);
-        const pairs = (j.pairs ?? []).filter((p: any) =>
-          p.chainId === "robinhood" || p.chainId?.includes("robin")
-        );
-        for (const p of pairs) {
-          const parsed = parsePair(p, "robinhood");
-          if (parsed) allRaw.push(parsed);
+        const j = await fetchJSON(`${DEX_BASE}/token-profiles/latest/v1`);
+        const addrs = (Array.isArray(j) ? j : [])
+          .filter((b: any) => b.chainId === "robinhood")
+          .map((b: any) => b.tokenAddress);
+        if (addrs.length) {
+          const data = await fetchJSON(`${DEX_BASE}/latest/dex/tokens/${addrs.join(",")}`);
+          addRhPairs(data.pairs ?? []);
         }
       } catch { /* skip */ }
-    })
-  );
+    })(),
 
+    // ── Source 2: Top boosted (chain-native) ──────────────────────────────
+    (async () => {
+      try {
+        const j = await fetchJSON(`${DEX_BASE}/token-boosts/top/v1`);
+        const addrs = (Array.isArray(j) ? j : [])
+          .filter((b: any) => b.chainId === "robinhood")
+          .map((b: any) => b.tokenAddress);
+        if (addrs.length) {
+          const data = await fetchJSON(`${DEX_BASE}/latest/dex/tokens/${addrs.join(",")}`);
+          addRhPairs(data.pairs ?? []);
+        }
+      } catch { /* skip */ }
+    })(),
+
+    // ── Source 3: Latest boosted (chain-native) ───────────────────────────
+    (async () => {
+      try {
+        const j = await fetchJSON(`${DEX_BASE}/token-boosts/latest/v1`);
+        const addrs = (Array.isArray(j) ? j : [])
+          .filter((b: any) => b.chainId === "robinhood")
+          .map((b: any) => b.tokenAddress);
+        if (addrs.length) {
+          const data = await fetchJSON(`${DEX_BASE}/latest/dex/tokens/${addrs.join(",")}`);
+          addRhPairs(data.pairs ?? []);
+        }
+      } catch { /* skip */ }
+    })(),
+
+    // ── Source 4: Broad generic searches (supplements chain-native) ───────
+    ...RH_BROAD_TERMS.map((term) =>
+      fetchJSON(`${DEX_BASE}/latest/dex/search?q=${encodeURIComponent(term)}`)
+        .then((j) => addRhPairs(j.pairs ?? []))
+        .catch(() => {})
+    ),
+  ]);
+
+  // Activity filter — use vol24h + change24h as primary signals (vol1h unreliable on RH chain)
   const result = dedup(allRaw).filter((p) =>
     p.price > 0 &&
-    p.liquidity >= 500 &&
-    (p.volume24h > 50 || p.volume1h > 5 || Math.abs(p.change1h) > 0.5)
+    p.liquidity >= 1_000 &&
+    (
+      p.volume24h  > 100 ||
+      p.volume1h   > 5   ||
+      Math.abs(p.change1h)  > 0.3 ||
+      Math.abs(p.change24h) > 1.0
+    )
   );
   console.log(`[scan] Robinhood: ${allRaw.length} raw → ${result.length} active after dedup/filter`);
   return result;
