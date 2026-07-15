@@ -1,3 +1,4 @@
+- [AGENT HANDOFF](AGENT_HANDOFF.md) — полная памятка: структура проекта, все эндпоинты, стратегии, как чинить ошибки, что сделано.
 - [AutoTrader architecture](autotrader-arch.md) — profit-lock lives only in AutoTrader (not PositionMonitor); both components use getKeypairDirect for keyless access.
 - [TradingContext auto-strategies](trading-context-multi-strategy.md) — multi-strategy support: autoStrategies (string[]), dailyTargetUsd, updatePositionSlPrice added; localStorage key "oko-trading" persists them.
 - [DexScreener screener scraper](dexscreener-screener-scraper.md) — puppeteer-extra+stealth on nix chromium bypasses CF; data via DOM→public API; cache empty-result bug fix; Ultra Safe uses /api/screener endpoint.
