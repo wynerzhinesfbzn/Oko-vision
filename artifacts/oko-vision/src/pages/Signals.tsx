@@ -100,32 +100,35 @@ type Network = "solana" | "robinhood";
  * then filtered per-strategy client-side by tokenMatchesStrategy().
  */
 
-// Three Solana screener pools + one Robinhood pool.
-// Browser mutex on the server serializes launches — max 4 unique URLs = max 4 sequential launches.
-// Strategies are mapped to the pool whose mcap range best covers them:
+// Two Solana screener pools + one Robinhood pool (3 unique URLs = 3 browser launches max).
+// NOTE: DexScreener ignores maxPairAge URL param — age filtering is done client-side only.
+// All 3 pools return ~99 trending tokens; pool differences drive different MCap floors.
 //   LARGE  (minMcap=150K, H6 trending): ultra-safe, safe-migration, balanced, smart-money
-//   SMALL  (minMcap=20K,  H6 trending): early-migration, volume-spike, hype, dip-recovery
-//   DEGEN  (minMcap=20K,  H1 trending, maxPairAge=24h): degen — NEW launches only
+//   SMALL  (minMcap=20K,  H6 trending): early-migration, volume-spike, degen, hype, dip-recovery
 const SOL_LARGE_URL =
   `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap&minLiq=10000&minMarketCap=150000&profile=0`;
 const SOL_SMALL_URL =
   `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap&minLiq=5000&minMarketCap=20000&profile=0`;
-const SOL_DEGEN_URL =
-  `https://dexscreener.com/?rankBy=trendingScoreH1&order=desc&chainIds=solana&dexIds=pumpswap&minLiq=5000&minMarketCap=20000&maxPairAge=24&profile=0`;
 const RH_SCREENER_URL =
   `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=robinhood&profile=0`;
 
 // Strategy IDs that belong to the large-cap pool
 const LARGE_CAP_STRATEGIES = new Set(["ultra-safe", "safe-migration", "balanced", "smart-money"]);
 
-// Max pair age in ms for display filter
+// Max pair age (ms) for client-side display filter.
+// "Early" strategies show only recently-created pairs; others have no age constraint.
+//   degen:           ≤72h — "new launches" (must be freshly migrated)
+//   early-migration: ≤96h — "ранний вход в миграцию" (within first 4 days of migration)
 const MAX_PAIR_AGE_MS: Partial<Record<string, number>> = {
-  "degen": 24 * 60 * 60 * 1000, // 24 hours — "new launches"
+  "degen":           72 * 60 * 60 * 1000,
+  "early-migration": 96 * 60 * 60 * 1000,
 };
+
+// Strategies where tokens are sorted newest-first (pairCreatedAt desc) instead of AI score.
+const SORT_BY_NEWEST = new Set(["degen", "early-migration"]);
 
 function getScreenerUrl(strategy: Strategy, network: Network): string {
   if (network === "robinhood") return RH_SCREENER_URL;
-  if (strategy.id === "degen") return SOL_DEGEN_URL;
   return LARGE_CAP_STRATEGIES.has(strategy.id) ? SOL_LARGE_URL : SOL_SMALL_URL;
 }
 
@@ -351,7 +354,9 @@ function StrategyPanel({ strategy, tokens, loading, onBuy }: {
   // Does NOT gate on aiScore / volSpikeMin / requireBuyAiSignal — those are
   // for auto-trading. Here we show everything in the strategy's market range,
   // sorted by AI score so the best candidates appear first.
-  const maxPairAge = MAX_PAIR_AGE_MS[strategy.id];
+  const maxPairAge  = MAX_PAIR_AGE_MS[strategy.id];
+  const sortNewest  = SORT_BY_NEWEST.has(strategy.id);
+  const now         = Date.now();
   const matched = tokens
     .filter(t => {
       const mcap = t.marketCap;
@@ -359,14 +364,17 @@ function StrategyPanel({ strategy, tokens, loading, onBuy }: {
       if (t.liquidity < strategy.liquidityMin) return false;
       if (t.change1h < strategy.change1hMin || t.change1h > strategy.change1hMax) return false;
       if (t.change24h < strategy.change24hMin || t.change24h > strategy.change24hMax) return false;
-      // Age filter: degen = new launches only (≤ 24h)
       if (maxPairAge !== undefined) {
         if (!t.pairCreatedAt) return false;
-        if (Date.now() - t.pairCreatedAt > maxPairAge) return false;
+        if (now - t.pairCreatedAt > maxPairAge) return false;
       }
       return true;
     })
-    .sort((a, b) => scoreTokenForStrategy(b, strategy) - scoreTokenForStrategy(a, strategy))
+    .sort((a, b) =>
+      sortNewest
+        ? (b.pairCreatedAt ?? 0) - (a.pairCreatedAt ?? 0)   // newest migration first
+        : scoreTokenForStrategy(b, strategy) - scoreTokenForStrategy(a, strategy)
+    )
     .slice(0, 50);
   const buyCount = matched.filter(t => tokenMatchesStrategy(t, strategy)).length;
   const rc = RISK_COLOR[strategy.riskLevel];
@@ -504,11 +512,9 @@ export default function Signals() {
     navigate(`/trading?mint=${token.mint}&symbol=${encodeURIComponent(token.symbol)}&price=${token.price}`);
   };
 
-  // Loose display filter: only mcap range + liq + change1h/24h.
-  // Unlike tokenMatchesStrategy, does NOT require aiScore/volSpike/requireBuyAiSignal.
-  // This matches what the user sees in DexScreener by the same parameters.
-  // Tokens are sorted by aiScore descending; high-quality BUY signals appear first.
-  // For degen strategy: also filters by pairCreatedAt ≤ 24h (new launches only).
+  // Loose display filter: mcap range + liq + change1h/24h bands.
+  // Does NOT gate on aiScore / volSpikeMin / requireBuyAiSignal (auto-trade only).
+  // For "early" strategies (degen, early-migration): also enforces MAX_PAIR_AGE_MS.
   function tokenInStrategyRange(t: ScanResult, s: typeof STRATEGIES[0]): boolean {
     const mcap = t.marketCap;
     if (!mcap || mcap < s.mcapMin || mcap > s.mcapMax) return false;
@@ -517,7 +523,7 @@ export default function Signals() {
     if (t.change24h < s.change24hMin || t.change24h > s.change24hMax) return false;
     const maxAge = MAX_PAIR_AGE_MS[s.id];
     if (maxAge !== undefined) {
-      if (!t.pairCreatedAt) return false; // no age data → exclude
+      if (!t.pairCreatedAt) return false;
       if (Date.now() - t.pairCreatedAt > maxAge) return false;
     }
     return true;
