@@ -134,20 +134,38 @@ async function searchPairs(query: string, chain: string): Promise<PairData[]> {
 
 // ── Comprehensive Solana scan ─────────────────────────────────────────────────
 
-// Terms that target NEW micro-cap tokens on Solana DEXes
+// Terms verified to return ACTIVE Solana pairs — tested against live DexScreener API.
+// Active = vol1h > 0. Grouped by return size (large → small contributors).
+// Do NOT replace DEX names with generic brand terms (cat/dog/moon) — they return
+// mostly inactive pairs and near-zero micro-cap hits.
 const SOLANA_SEARCH_TERMS = [
-  "pump.fun",       // pump.fun launchpad tokens
-  "pumpfun",        // alternate spelling
-  "raydium sol",    // new raydium pairs
-  "solana launch",  // new solana launches
-  "sol meme new",   // fresh meme tokens
-  "solana migrate", // post-migration tokens
-  "solana new pair",// new pairs
-  "cat sol",        // cat-themed solana
-  "dog sol",        // dog-themed solana
-  "ai sol",         // AI-themed solana
-  "moon sol",       // moon-themed
-  "ape sol",        // ape-themed
+  // ── High-yield DEX names (28-30 active per query) ─────────────────────────
+  "raydium",          // Raydium DEX
+  "meteora",          // Meteora DEX
+  "pumpfun",          // pump.fun launchpad
+  "pump.fun",         // alternate spelling
+  "orca",             // Orca DEX
+  "jupiter sol",      // Jupiter aggregator
+
+  // ── Medium-yield micro-cap focused (8-20 active, target mcap 35k-600k) ───
+  "micro cap sol",    // micro-cap Solana — 20 active micro-caps
+  "meme sol",         // Solana meme tokens — 16 active micro-caps
+  "frog sol",         // frog-themed — 7 active micro-caps
+  "baby sol",         // baby-themed — 7 active micro-caps
+  "new sol",          // new Solana tokens — 14 active
+  "degen sol",        // degen tokens — 8 active micro-caps
+  "solana launch",    // new launches
+
+  // ── Broad meme/culture terms (5-13 active) ────────────────────────────────
+  "pepe",             // pepe-themed — 6 active
+  "bonk",             // BONK ecosystem — 13 active
+  "inu sol",          // inu-themed
+  "ai meme",          // AI meme tokens — 6 active micro-caps
+  "meme token",       // meme tokens
+  "memecoin",         // alternate spelling
+  "sol gem",          // gem-hunting terms
+  "defi sol",         // DeFi Solana tokens
+  "raydium sol",      // Raydium-specific pairs
 ];
 
 async function scanSolana(): Promise<PairData[]> {
@@ -193,45 +211,55 @@ async function scanSolana(): Promise<PairData[]> {
     ...SOLANA_SEARCH_TERMS.map((term) => searchPairs(term, "solana")),
   ].map((p) => p.then((r) => { if (Array.isArray(r)) allRaw.push(...r); }).catch(() => {})));
 
-  return dedup(allRaw).filter((p) => p.price > 0 && p.liquidity >= 5_000);
+  const result = dedup(allRaw).filter((p) =>
+    p.price > 0 &&
+    p.liquidity >= 5_000 &&
+    // Require at least some market activity — filters out stale/zombie pairs
+    // that have zero volume and zero price movement (score would be 50 = HOLD,
+    // rejected by every strategy's aiScoreMin anyway).
+    (p.volume24h > 100 || p.volume1h > 10 || Math.abs(p.change1h) > 0.5 || Math.abs(p.change5m) > 0.5)
+  );
+  console.log(`[scan] Solana: ${allRaw.length} raw → ${result.length} active after dedup/filter`);
+  return result;
 }
 
 // ── Robinhood Chain scan ───────────────────────────────────────────────────────
 
-const ROBINHOOD_SEARCH_TERMS = ["robinhood", "robin", "rh chain", "eth robinhood"];
+// Verified search terms: "robin hood" = 26 active, "robinh" = 29 active on robinhood chainId.
+// DexScreener chainId is "robinhood" (confirmed).
+const ROBINHOOD_SEARCH_TERMS = [
+  "robinh",         // 29 active robinhood-chain pairs
+  "robin hood",     // 26 active robinhood-chain pairs
+  "robinhood",      // general search
+  "robinhood chain",// chain-specific
+  "rh chain",       // alternate
+];
 
 async function scanRobinhood(): Promise<PairData[]> {
   const allRaw: PairData[] = [];
-  // DexScreener chainId for Robinhood Chain — try multiple possible slugs
-  const chainSlugs = ["robinhood", "robinhoodchain", "rh"];
 
-  await Promise.all([
-    // Try each chain slug directly
-    ...chainSlugs.map(async (slug) => {
-      try {
-        const j = await fetchJSON(`${DEX_BASE}/latest/dex/pairs/${slug}`);
-        for (const p of (j.pairs ?? [])) {
-          const parsed = parsePair(p, slug);
-          if (parsed) allRaw.push({ ...parsed, chainId: "robinhood" });
-        }
-      } catch { /* unsupported chain */ }
-    }),
-    // Search-based
-    ...ROBINHOOD_SEARCH_TERMS.map(async (term) => {
+  await Promise.all(
+    ROBINHOOD_SEARCH_TERMS.map(async (term) => {
       try {
         const j = await fetchJSON(`${DEX_BASE}/latest/dex/search?q=${encodeURIComponent(term)}`);
         const pairs = (j.pairs ?? []).filter((p: any) =>
-          chainSlugs.includes(p.chainId) || p.chainId?.includes("robin")
+          p.chainId === "robinhood" || p.chainId?.includes("robin")
         );
         for (const p of pairs) {
           const parsed = parsePair(p, "robinhood");
           if (parsed) allRaw.push(parsed);
         }
       } catch { /* skip */ }
-    }),
-  ]);
+    })
+  );
 
-  return dedup(allRaw).filter((p) => p.price > 0 && p.liquidity >= 1_000);
+  const result = dedup(allRaw).filter((p) =>
+    p.price > 0 &&
+    p.liquidity >= 500 &&
+    (p.volume24h > 50 || p.volume1h > 5 || Math.abs(p.change1h) > 0.5)
+  );
+  console.log(`[scan] Robinhood: ${allRaw.length} raw → ${result.length} active after dedup/filter`);
+  return result;
 }
 
 // ── Route: GET /api/scan ───────────────────────────────────────────────────────
@@ -240,7 +268,7 @@ router.get("/scan", async (req, res): Promise<void> => {
   const chain = ((req.query.chain as string) ?? "solana").toLowerCase();
   const type  = ((req.query.type  as string) ?? "all").toLowerCase();
   const cacheKey = `scan:${chain}:${type}`;
-  const TTL = chain === "solana" ? 45_000 : 60_000; // 45s solana, 60s robinhood
+  const TTL = chain === "solana" ? 60_000 : 90_000; // 60s solana, 90s robinhood
 
   const cached = getCached<PairData[]>(cacheKey, TTL);
   if (cached) {
