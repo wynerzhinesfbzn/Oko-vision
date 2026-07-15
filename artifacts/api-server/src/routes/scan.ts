@@ -149,16 +149,24 @@ async function searchPairs(query: string, chain: string): Promise<PairData[]> {
 //   dexId === "pumpswap" before entering the pool.
 //
 const PUMPSWAP_SEARCH_TERMS = [
-  // Theme: animals & creatures (most popular pump.fun category)
-  "cat",      "dog",      "frog",     "ape",      "bull",
-  "bear",     "inu",      "fish",     "shark",    "bird",
+  // Theme: animals & creatures
+  "cat",    "dog",    "frog",   "ape",    "bull",   "bear",   "inu",
+  "fish",   "shark",  "bird",   "kitten", "wolf",   "rabbit", "fox",
+  "horse",  "snake",  "crab",   "goat",   "rat",
   // Theme: internet culture & memes
-  "pepe",     "wojak",    "chad",     "meme",     "giga",
-  "sigma",    "based",    "wif",      "brain",    "degen",
-  // Theme: celebrity / political (high engagement on pump.fun)
-  "trump",    "elon",     "ansem",    "pnut",     "goat",
+  "pepe",   "wojak",  "chad",   "meme",   "giga",   "sigma",
+  "based",  "wif",    "brain",  "degen",  "pnut",   "bonk",
+  // Theme: celebrity / political
+  "trump",  "elon",   "ansem",  "musk",   "biden",  "vlad",
   // Theme: crypto/money terms
-  "moon",     "pump",     "sol",
+  "moon",   "pump",   "sol",    "coin",   "token",  "fi",     "swap",
+  // Theme: common word fragments — catches tokens with unusual names
+  // (single searches return 30 results each, all post-filtered to pumpswap)
+  "world",  "cup",    "game",   "play",   "new",    "real",
+  "king",   "lord",   "war",    "fire",   "sky",    "sun",
+  "red",    "blue",   "green",  "black",  "white",
+  "super",  "ultra",  "mega",   "pro",    "max",    "big",
+  "love",   "fun",    "rich",   "gold",   "star",   "club",
 ];
 
 /** Filter a raw pair list to only PumpSwap migrations */

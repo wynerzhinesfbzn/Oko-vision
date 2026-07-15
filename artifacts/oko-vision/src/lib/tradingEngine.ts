@@ -64,7 +64,7 @@ export const STRATEGIES: Strategy[] = [
     emoji: "🛡️",
     riskLevel: "low",
     mcapMin: 800_000, mcapMax: 5_000_000,
-    liquidityMin: 120_000,
+    liquidityMin: 50_000,
     volSpikeMin: 0, change1hMin: 0, change1hMax: 1_000,
     change24hMin: -100, change24hMax: 1_000,
     aiScoreMin: 65, requireBuyAiSignal: true, dipRecovery: false,
