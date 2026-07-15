@@ -445,33 +445,58 @@ function DashboardView({
             {bal.toFixed(6)} <span style={{ fontSize: 22, color: C.sub }}>ETH</span>
           </div>
         )}
-        <div style={{
-          marginTop: 14, padding: "10px 0 0",
-          borderTop: `1px solid ${C.border2}`,
-          fontSize: 11, fontFamily: "monospace", color: C.dim, wordBreak: "break-all",
-        }}>
+        {/* Clickable address → opens on-chain explorer */}
+        <a
+          href={`${RH_EXPLORER}/address/${evm.address}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Посмотреть кошелёк в Robinhood Explorer"
+          style={{
+            display: "block",
+            marginTop: 14, padding: "10px 12px",
+            borderTop: `1px solid ${C.border2}`,
+            fontSize: 11, fontFamily: "monospace", color: C.blue,
+            wordBreak: "break-all", textDecoration: "none",
+            transition: "color 0.15s",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.color = "#5580ff")}
+          onMouseLeave={e => (e.currentTarget.style.color = C.blue)}
+        >
           {evm.address}
-        </div>
+          <span style={{ marginLeft: 6, opacity: 0.7 }}>↗</span>
+        </a>
       </Card>
 
-      {/* Network chip */}
+      {/* Network chip — кликабельный, ведёт на главную Explorer */}
       <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
-        <div style={{
-          display: "inline-flex", alignItems: "center", gap: 6,
-          background: `${C.green}10`, border: `1px solid ${C.green}25`,
-          borderRadius: 20, padding: "5px 14px", fontSize: 12, color: C.green,
-        }}>
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.green, display: "inline-block" }} />
-          Robinhood Chain · ID 4663
-        </div>
+        <a
+          href={RH_EXPLORER}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            background: `${C.green}10`, border: `1px solid ${C.green}25`,
+            borderRadius: 20, padding: "5px 14px", fontSize: 12, color: C.green,
+            textDecoration: "none",
+          }}
+        >
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.green, display: "inline-block", boxShadow: `0 0 6px ${C.green}` }} />
+          Robinhood Chain · ID 4663 · Explorer ↗
+        </a>
       </div>
 
       {/* Action buttons */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 24 }}>
         <ActionBtn icon="↑" label="Отправить" onClick={onSend} color={C.green} />
         <ActionBtn icon="↓" label="Получить"  onClick={onReceive} color={C.blue} />
+        <ActionBtnLink
+          icon="🔍"
+          label="Explorer"
+          href={`${RH_EXPLORER}/address/${evm.address}`}
+          color="#a78bfa"
+        />
         <ActionBtn icon="↺" label="Обновить"  onClick={evm.refreshBalance} color={C.gold} />
-        <ActionBtn icon="🔒" label="Закрыть" onClick={onLock} color={C.dim} />
+        <ActionBtn icon="🔒" label="Закрыть"   onClick={onLock} color={C.dim} />
       </div>
 
       {/* TX History */}
@@ -688,9 +713,26 @@ function ReceiveView({ onBack }: { onBack: () => void }) {
         {copied ? "✓ Скопировано!" : "Скопировать адрес"}
       </Btn>
 
-      <Note style={{ maxWidth: 360, marginTop: 16 }}>
-        ⚠️ Принимайте только нативный ETH сети Robinhood Chain.
-        Другие сети не поддерживаются этим адресом в рамках данного кошелька.
+      {/* Verify on-chain */}
+      <a
+        href={`${RH_EXPLORER}/address/${address}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          gap: 6, maxWidth: 360, width: "100%",
+          padding: "13px 0", borderRadius: 14,
+          background: `${C.blue}12`, border: `1px solid ${C.blue}30`,
+          color: C.blue, fontSize: 14, fontWeight: 700,
+          textDecoration: "none", transition: "opacity 0.15s",
+        }}
+      >
+        🔍 Проверить в Robinhood Explorer ↗
+      </a>
+
+      <Note style={{ maxWidth: 360, marginTop: 4 }}>
+        ⚠️ Принимайте только нативный ETH сети Robinhood Chain (ID 4663).
+        Другие сети не поддерживаются этим адресом.
       </Note>
     </Page>
   );
@@ -767,6 +809,28 @@ function ActionBtn({ icon, label, onClick, color }: { icon: string; label: strin
       <span style={{ fontSize: 22, color }}>{icon}</span>
       <span style={{ fontSize: 12, fontWeight: 600, color }}>{label}</span>
     </button>
+  );
+}
+
+/** Like ActionBtn but renders as an <a> tag — opens explorer in new tab */
+function ActionBtnLink({ icon, label, href, color }: { icon: string; label: string; href: string; color: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: "flex", flexDirection: "column", alignItems: "center",
+        gap: 6, padding: "16px 0",
+        background: C.card, border: `1px solid ${C.border}`,
+        borderRadius: 16, cursor: "pointer",
+        color: C.sub, transition: "all 0.15s",
+        textDecoration: "none",
+      }}
+    >
+      <span style={{ fontSize: 22, color }}>{icon}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color }}>{label}</span>
+    </a>
   );
 }
 

@@ -622,13 +622,35 @@ export default function WalletDashboard() {
             )}
 
             {/* Address row */}
-            <button onClick={copy} className="flex items-center gap-2 mt-3 group">
-              <div className="w-4 h-4 rounded-full" style={{ background: "rgba(201,168,76,0.15)", border: "1px solid rgba(201,168,76,0.30)" }}>
-                <div className="w-full h-full rounded-full pulse-dot" style={{ background: "rgba(201,168,76,0.5)" }} />
-              </div>
-              <span style={{ color: "rgba(255,255,255,0.45)", fontSize: "11px", fontFamily: "monospace" }}>{shortAddr(address, 6)}</span>
-              {copied ? <Check size={11} style={{ color: "#C9A84C" }} /> : <Copy size={11} style={{ color: "rgba(255,255,255,0.2)" }} />}
-            </button>
+            <div className="flex items-center gap-2 mt-3">
+              <button onClick={copy} className="flex items-center gap-2 group">
+                <div className="w-4 h-4 rounded-full" style={{ background: "rgba(201,168,76,0.15)", border: "1px solid rgba(201,168,76,0.30)" }}>
+                  <div className="w-full h-full rounded-full pulse-dot" style={{ background: "rgba(201,168,76,0.5)" }} />
+                </div>
+                <span style={{ color: "rgba(255,255,255,0.45)", fontSize: "11px", fontFamily: "monospace" }}>{shortAddr(address, 6)}</span>
+                {copied ? <Check size={11} style={{ color: "#C9A84C" }} /> : <Copy size={11} style={{ color: "rgba(255,255,255,0.2)" }} />}
+              </button>
+              <a
+                href={`https://solscan.io/account/${address}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Открыть в Solscan"
+                className="flex items-center gap-1 px-2 py-0.5 rounded-lg ml-1"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)", color: "rgba(255,255,255,0.30)", fontSize: "9px", textDecoration: "none", fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700 }}
+              >
+                <ExternalLink size={8} /> Solscan
+              </a>
+              <a
+                href={`https://solana.fm/address/${address}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Открыть в SolanaFM"
+                className="flex items-center gap-1 px-2 py-0.5 rounded-lg"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)", color: "rgba(255,255,255,0.30)", fontSize: "9px", textDecoration: "none", fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700 }}
+              >
+                <ExternalLink size={8} /> FM
+              </a>
+            </div>
 
             {lastRefresh && (
               <p style={{ color: "rgba(255,255,255,0.18)", fontSize: "9px", marginTop: 8 }}>
