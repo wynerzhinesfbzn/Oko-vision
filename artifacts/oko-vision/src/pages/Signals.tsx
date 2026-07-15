@@ -86,6 +86,52 @@ function computeScore(t: Pick<ScanResult, "change5m"|"change1h"|"change24h"|"vol
 
 // ── API fetch ─────────────────────────────────────────────────────────────────
 
+// DexScreener screener URL for Ultra Safe Post-Migration strategy
+const ULTRA_SAFE_SCREENER_URL =
+  "https://dexscreener.com/?rankBy=trendingScoreH6&order=desc" +
+  "&chainIds=solana&dexIds=pumpswap&minLiq=50000&minMarketCap=800000&minAge=20&profile=1";
+
+/** Fetch pair data via the headless-browser screener endpoint (for Ultra Safe only) */
+async function fetchScreenerTokens(): Promise<ScanResult[]> {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const url = `${origin}/api/screener?url=${encodeURIComponent(ULTRA_SAFE_SCREENER_URL)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`Screener API ${res.status}`);
+  const data = await res.json();
+  const pairs: any[] = data.pairs ?? [];
+  return pairs
+    .filter((p) => p.mint && p.price > 0 && p.liquidity > 0)
+    .map((p): ScanResult => {
+      const { score, signal } = computeScore({
+        change5m: Number(p.change5m ?? 0),
+        change1h: Number(p.change1h ?? 0),
+        change24h: Number(p.change24h ?? 0),
+        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
+      });
+      return {
+        mint:               p.mint,
+        symbol:             p.symbol  ?? "?",
+        name:               p.name    ?? "?",
+        imageUrl:           p.imageUrl ?? "",
+        poolAddress:        p.poolAddress ?? "",
+        price:              Number(p.price),
+        marketCap:          Number(p.marketCap ?? 0),
+        liquidity:          Number(p.liquidity),
+        volume24h:          Number(p.volume24h ?? 0),
+        volume1h:           Number(p.volume1h  ?? 0),
+        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
+        change5m:  Number(p.change5m  ?? 0),
+        change1h:  Number(p.change1h  ?? 0),
+        change24h: Number(p.change24h ?? 0),
+        aiScore:   score,
+        aiSignal:  signal,
+        dexScreenerUrl: p.dexScreenerUrl ?? "",
+        pairCreatedAt:  p.pairCreatedAt ? Number(p.pairCreatedAt) : null,
+        dexId:          p.dexId ?? "pumpswap",
+      };
+    });
+}
+
 async function fetchTokens(chain: "solana" | "robinhood"): Promise<ScanResult[]> {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const res = await fetch(`${origin}/api/scan?chain=${chain}&type=all`, {
@@ -371,14 +417,17 @@ export default function Signals() {
   // Strategy tab
   const [stratIdx, setStratIdx] = useState(0);
   // Tokens per network
-  const [solTokens, setSolTokens]     = useState<ScanResult[]>([]);
-  const [rhTokens,  setRhTokens]      = useState<ScanResult[]>([]);
-  const [loadingSol, setLoadingSol]   = useState(true);
-  const [loadingRh,  setLoadingRh]    = useState(false); // lazy
+  const [solTokens, setSolTokens]           = useState<ScanResult[]>([]);
+  const [rhTokens,  setRhTokens]            = useState<ScanResult[]>([]);
+  const [screenerTokens, setScreenerTokens] = useState<ScanResult[]>([]);
+  const [loadingSol,      setLoadingSol]    = useState(true);
+  const [loadingRh,       setLoadingRh]     = useState(false); // lazy
+  const [loadingScreener, setLoadingScreener] = useState(true);
   const [errorSol,  setErrorSol]      = useState<string | null>(null);
   const [errorRh,   setErrorRh]       = useState<string | null>(null);
   const [lastUpdate, setLastUpdate]   = useState<Date | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const screenerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadSolana = useCallback(async (silent = false) => {
     if (!silent) setLoadingSol(true);
@@ -407,12 +456,31 @@ export default function Signals() {
     }
   }, []);
 
+  // Screener: separate load for Ultra Safe strategy (browser-based, ~20s, 90s refresh)
+  const loadScreener = useCallback(async () => {
+    setLoadingScreener(true);
+    try {
+      const t = await fetchScreenerTokens();
+      setScreenerTokens(t);
+    } catch (e: any) {
+      console.warn("[screener]", e.message);
+      // fallback: keep old tokens, don't wipe with error
+    } finally {
+      setLoadingScreener(false);
+    }
+  }, []);
+
   // Initial load: Solana eagerly, Robinhood lazily when tab opened
   useEffect(() => {
     loadSolana();
-    timerRef.current = setInterval(() => loadSolana(true), 45_000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [loadSolana]);
+    loadScreener();
+    timerRef.current    = setInterval(() => loadSolana(true), 45_000);
+    screenerRef.current = setInterval(() => loadScreener(),   90_000);
+    return () => {
+      if (timerRef.current)    clearInterval(timerRef.current);
+      if (screenerRef.current) clearInterval(screenerRef.current);
+    };
+  }, [loadSolana, loadScreener]);
 
   // Load Robinhood when first selected
   const rhLoadedRef = useRef(false);
@@ -434,10 +502,15 @@ export default function Signals() {
 
   const activeStrategy = STRATEGIES[stratIdx];
 
+  // Ultra Safe uses screener data (pre-filtered by DexScreener); others use scan data
+  const isUltraSafe = network === "solana" && activeStrategy.id === "ultra-safe";
+
   // Count matches per strategy for current network tokens
-  const matchCounts = STRATEGIES.map(s =>
-    tokens.filter(t => tokenMatchesStrategy(t, s)).length
-  );
+  // Ultra Safe tab shows screener match count
+  const matchCounts = STRATEGIES.map((s, i) => {
+    const src = (network === "solana" && i === 0) ? screenerTokens : tokens;
+    return src.filter(t => tokenMatchesStrategy(t, s)).length;
+  });
   const totalSignals = matchCounts.reduce((a, b) => a + b, 0);
 
   return (
@@ -565,8 +638,29 @@ export default function Signals() {
           </div>
         )}
 
+        {/* Ultra Safe info bar (screener source) */}
+        {isUltraSafe && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 14, background: "rgba(153,69,255,0.06)", border: "1px solid rgba(153,69,255,0.22)", borderRadius: 12 }}>
+            <Shield size={14} color="#9945FF" />
+            <div style={{ flex: 1 }}>
+              <span style={{ color: "#9945FF", fontSize: 11, fontWeight: 700 }}>DexScreener Screener · прямой источник</span>
+              <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10, marginLeft: 10 }}>
+                {loadingScreener ? "Загрузка через браузер (~20с)…" : `${screenerTokens.length} токенов · обновление каждые 90с`}
+              </span>
+            </div>
+            <button
+              onClick={loadScreener}
+              disabled={loadingScreener}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 9, background: "rgba(153,69,255,0.08)", border: "1px solid rgba(153,69,255,0.28)", color: "#9945FF", fontSize: 10, fontWeight: 700, cursor: loadingScreener ? "not-allowed" : "pointer", opacity: loadingScreener ? 0.5 : 1 }}
+            >
+              <RefreshCw size={10} style={{ animation: loadingScreener ? "spin 1s linear infinite" : "none" }} />
+              Refresh
+            </button>
+          </div>
+        )}
+
         {/* Error state */}
-        {error ? (
+        {!isUltraSafe && error ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "60px 16px", background: "rgba(255,77,94,0.04)", border: "1px solid rgba(255,77,94,0.2)", borderRadius: 16 }}>
             <AlertTriangle size={30} color="#FF4D5E" />
             <span style={{ color: "#FF4D5E", fontSize: 14, fontWeight: 700 }}>Ошибка загрузки данных</span>
@@ -579,8 +673,8 @@ export default function Signals() {
           <StrategyPanel
             key={`${network}-${activeStrategy.id}`}
             strategy={activeStrategy}
-            tokens={tokens}
-            loading={loading}
+            tokens={isUltraSafe ? screenerTokens : tokens}
+            loading={isUltraSafe ? loadingScreener : loading}
             onBuy={handleBuy}
           />
         )}
