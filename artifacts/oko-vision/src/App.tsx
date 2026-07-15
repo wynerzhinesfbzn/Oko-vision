@@ -8,21 +8,26 @@ import { BalanceProvider }       from "@/context/BalanceContext";
 import { EVMWalletProvider }     from "@/context/EVMWalletContext";
 import { initTheme }             from "@/lib/themes";
 import { saveRefCode, registerReferral, ensureRefLinkRegistered } from "@/lib/referral";
-import PositionMonitor from "@/components/PositionMonitor";
-import AutoTrader from "@/components/AutoTrader";
 
-import Home from "@/pages/Home";
+// ── Lazy-load heavy trading monitors ─────────────────────────────────────────
+// These pull @solana/web3.js + swapExecutor + jupiter into the bundle.
+// By lazy-loading them we keep the initial JS chunk small so the shell
+// paints fast, then monitors attach after hydration.
+const PositionMonitor = lazy(() => import("@/components/PositionMonitor"));
+const AutoTrader      = lazy(() => import("@/components/AutoTrader"));
 
-const WalletSelect      = lazy(() => import("@/pages/WalletSelect"));
-const WalletDashboard   = lazy(() => import("@/pages/WalletDashboard"));
-const Markets           = lazy(() => import("@/pages/Markets"));
-const Signals           = lazy(() => import("@/pages/Signals"));
-const Portfolio         = lazy(() => import("@/pages/Portfolio"));
-const Trading           = lazy(() => import("@/pages/Trading"));
-const Leaderboard       = lazy(() => import("@/pages/Leaderboard"));
-const Referral          = lazy(() => import("@/pages/Referral"));
-const Bridge            = lazy(() => import("@/pages/Bridge"));
-const Backtesting       = lazy(() => import("@/pages/Backtesting"));
+// ── Lazy-load all pages ───────────────────────────────────────────────────────
+const Home            = lazy(() => import("@/pages/Home"));
+const WalletSelect    = lazy(() => import("@/pages/WalletSelect"));
+const WalletDashboard = lazy(() => import("@/pages/WalletDashboard"));
+const Markets         = lazy(() => import("@/pages/Markets"));
+const Signals         = lazy(() => import("@/pages/Signals"));
+const Portfolio       = lazy(() => import("@/pages/Portfolio"));
+const Trading         = lazy(() => import("@/pages/Trading"));
+const Leaderboard     = lazy(() => import("@/pages/Leaderboard"));
+const Referral        = lazy(() => import("@/pages/Referral"));
+const Bridge          = lazy(() => import("@/pages/Bridge"));
+const Backtesting     = lazy(() => import("@/pages/Backtesting"));
 const MultiChainWallet  = lazy(() => import("@/pages/MultiChainWallet"));
 const RobinhoodWallet   = lazy(() => import("@/pages/RobinhoodWallet"));
 const NotFound          = lazy(() => import("@/pages/not-found"));
@@ -67,6 +72,19 @@ function Router() {
   );
 }
 
+/** Mount trading monitors only after wallet connects so their heavy JS chunk
+ *  loads in the background while the user is still on the home/wallet screen. */
+function TradingMonitors() {
+  const { connected } = useOkoWallet();
+  if (!connected) return null;
+  return (
+    <Suspense fallback={null}>
+      <PositionMonitor />
+      <AutoTrader />
+    </Suspense>
+  );
+}
+
 function ReferralBridge() {
   const { address, connected } = useOkoWallet();
   useEffect(() => {
@@ -91,8 +109,7 @@ function App() {
           <BalanceProvider>
             <TradingProvider>
               <EVMWalletProvider>
-                <PositionMonitor />
-                <AutoTrader />
+                <TradingMonitors />
                 <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
                   <ReferralBridge />
                   <Router />

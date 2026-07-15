@@ -63,16 +63,39 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: (id) => {
-          if (id.includes("node_modules/@solana") || id.includes("node_modules/@wallet-standard") || id.includes("node_modules/@noble"))
+          // React core — tiny, cached forever
+          if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/") || id.includes("node_modules/scheduler/"))
+            return "vendor-react";
+
+          // Solana web3 + wallet adapters — ~2 MB, load only after wallet connect
+          if (id.includes("node_modules/@solana/wallet-adapter"))
+            return "vendor-wallet-adapters";
+          if (id.includes("node_modules/@solana") || id.includes("node_modules/@wallet-standard"))
             return "vendor-solana";
+
+          // Crypto primitives (bs58, tweetnacl, @noble/*) — pulled by solana libs
+          if (id.includes("node_modules/bs58") || id.includes("node_modules/tweetnacl") || id.includes("node_modules/@noble"))
+            return "vendor-crypto";
+
+          // Ethers ~1.5 MB — only needed for EVM wallet
+          if (id.includes("node_modules/ethers"))
+            return "vendor-ethers";
+
+          // Charts: recharts (portfolio) + lightweight-charts (trading)
           if (id.includes("node_modules/recharts") || id.includes("node_modules/d3"))
-            return "vendor-charts";
+            return "vendor-charts-recharts";
+          if (id.includes("node_modules/lightweight-charts"))
+            return "vendor-charts-lw";
+
+          // Data / query
           if (id.includes("node_modules/@tanstack"))
             return "vendor-query";
-          if (id.includes("node_modules/react") || id.includes("node_modules/react-dom") || id.includes("node_modules/scheduler"))
-            return "vendor-react";
+
+          // Icons — lucide is large, split it out
           if (id.includes("node_modules/lucide"))
             return "vendor-icons";
+
+          // i18n translations
           if (id.includes("node_modules/i18next") || id.includes("node_modules/react-i18next"))
             return "vendor-i18n";
         },

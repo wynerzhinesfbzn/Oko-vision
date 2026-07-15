@@ -384,9 +384,11 @@ export function BalanceProvider({ children }: { children: ReactNode }) {
     }
   }, [address, solBalance, solPrice, tokens]);
 
-  // Initial load when wallet connects
+  // Initial load when wallet connects — deferred 1.5 s so the shell renders first,
+  // then balance data loads in the background (session cache shows instantly anyway).
   useEffect(() => {
-    refresh();
+    const t = setTimeout(() => { refresh(); }, 1500);
+    return () => clearTimeout(t);
   }, [refresh]);
 
   // SOL balance: poll every 20s (lightweight)
