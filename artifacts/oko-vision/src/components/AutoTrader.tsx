@@ -355,25 +355,15 @@ export default function AutoTrader() {
       return;
     }
 
-    // ── Fetch scan results ─────────────────────────────────────────────────
+    // ── Fetch scan results (все источники: 150+ токенов) ──────────────────────
     let scanResults: ScanResult[];
     try {
-      // Fetch boosted + latest in parallel, merge and deduplicate
-      const [boosted, latest] = await Promise.allSettled([
-        fetchScanResults("boosted"),
-        fetchScanResults("latest"),
-      ]);
-
-      const merged = new Map<string, ScanResult>();
-      const addAll = (arr: ScanResult[]) => arr.forEach((r) => { if (!merged.has(r.mint)) merged.set(r.mint, r); });
-
-      if (boosted.status === "fulfilled") addAll(boosted.value);
-      if (latest.status  === "fulfilled") addAll(latest.value);
-
-      scanResults = [...merged.values()];
+      // type="all" → 12+ параллельных DexScreener источников через сервер-прокси
+      // Тот же пул токенов, что и на странице Сигналов (ручной трейдинг)
+      scanResults = await fetchScanResults("all");
       console.log(`[AutoTrader] 📊 Скан: ${scanResults.length} токенов (congestion ${(congestion * 100).toFixed(0)}%)`);
     } catch (e: any) {
-      console.warn("[AutoTrader] DexScreener scan failed:", e.message);
+      console.warn("[AutoTrader] Scan failed:", e.message);
       consecutiveErrors.current++;
       return;
     }

@@ -264,77 +264,97 @@ function computeAiSignal(t: {
 
 /**
  * Fetch enriched scan results from the server-side proxy.
- * Falls back to DexScreener direct if the proxy is unavailable.
+ *
+ * type="all"  → 12+ parallel DexScreener sources, 150+ unique Solana tokens (default)
+ * type="boosted" / "latest" → single-source fallback (legacy)
+ *
+ * Falls back to DexScreener direct (token-boosts) if the proxy is unavailable.
  */
-export async function fetchScanResults(type: "boosted" | "latest" = "boosted"): Promise<ScanResult[]> {
+export async function fetchScanResults(type: "all" | "boosted" | "latest" = "all"): Promise<ScanResult[]> {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   let rawPairs: any[] = [];
 
-  // Try server proxy first (no CORS)
+  // ── Try server proxy first (no CORS, multi-source) ────────────────────────
   try {
     const res = await fetch(`${origin}/api/scan?chain=solana&type=${type}`, {
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     if (res.ok) {
       const data = await res.json();
       rawPairs = data.pairs ?? [];
+      if (rawPairs.length > 0) {
+        console.log(`[TradingEngine] fetchScanResults(${type}): ${rawPairs.length} токенов от proxy`);
+      }
     }
   } catch { /* fall through to direct */ }
 
-  // Fallback: direct DexScreener (may hit CORS in some browsers)
-  if (rawPairs.length === 0 && type === "boosted") {
+  // ── Fallback: direct DexScreener if proxy returned nothing ────────────────
+  if (rawPairs.length === 0) {
+    console.warn("[TradingEngine] Proxy вернул 0 токенов — пробую DexScreener напрямую");
     try {
-      const boostRes = await fetch("https://api.dexscreener.com/token-boosts/top/v1", {
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (boostRes.ok) {
-        const boosts: any[] = await boostRes.json();
-        const addrs = boosts.filter((b) => b.chainId === "solana").slice(0, 30)
-          .map((b) => b.tokenAddress).join(",");
-        if (addrs) {
-          const pairRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addrs}`);
-          if (pairRes.ok) {
-            const pj = await pairRes.json();
-            const seenMint = new Set<string>();
-            for (const p of (pj.pairs ?? []).filter((pp: any) => pp.chainId === "solana")) {
-              const mint = p.baseToken?.address;
-              if (!mint || seenMint.has(mint)) continue;
-              seenMint.add(mint);
-              const vol24h = Number(p.volume?.h24 ?? 0);
-              const vol1h  = Number(p.volume?.h1  ?? 0);
-              const avg    = vol24h > 0 ? vol24h / 24 : 0;
-              rawPairs.push({
-                mint,
-                symbol:             p.baseToken?.symbol ?? "?",
-                name:               p.baseToken?.name   ?? "?",
-                imageUrl:           p.info?.imageUrl     ?? "",
-                poolAddress:        p.pairAddress        ?? "",
-                price:              parseFloat(p.priceUsd ?? "0") || 0,
-                marketCap:          p.marketCap ?? p.fdv ?? null,
-                liquidity:          Number(p.liquidity?.usd ?? 0),
-                volume24h:          vol24h,
-                volume1h:           vol1h,
-                volSpikeMultiplier: avg > 0 ? vol1h / avg : 0,
-                change5m:  Number(p.priceChange?.m5  ?? 0),
-                change1h:  Number(p.priceChange?.h1  ?? 0),
-                change24h: Number(p.priceChange?.h24 ?? 0),
-                dexScreenerUrl: p.url ?? "",
-              });
-            }
+      // Parallel: top boosts + latest boosts + latest profiles
+      const [topBoostRes, latestBoostRes] = await Promise.allSettled([
+        fetch("https://api.dexscreener.com/token-boosts/top/v1",    { signal: AbortSignal.timeout(8_000) }),
+        fetch("https://api.dexscreener.com/token-boosts/latest/v1", { signal: AbortSignal.timeout(8_000) }),
+      ]);
+
+      const allAddrs = new Set<string>();
+      for (const r of [topBoostRes, latestBoostRes]) {
+        if (r.status !== "fulfilled" || !r.value.ok) continue;
+        const items: any[] = await r.value.json();
+        items.filter((b) => b.chainId === "solana").slice(0, 40)
+          .forEach((b) => allAddrs.add(b.tokenAddress));
+      }
+
+      if (allAddrs.size > 0) {
+        const addrs = [...allAddrs].join(",");
+        const pairRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addrs}`, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (pairRes.ok) {
+          const pj = await pairRes.json();
+          const seenMint = new Set<string>();
+          for (const p of (pj.pairs ?? []).filter((pp: any) => pp.chainId === "solana")) {
+            const mint = p.baseToken?.address;
+            if (!mint || seenMint.has(mint)) continue;
+            seenMint.add(mint);
+            const vol24h = Number(p.volume?.h24 ?? 0);
+            const vol1h  = Number(p.volume?.h1  ?? 0);
+            const avg    = vol24h > 0 ? vol24h / 24 : 0;
+            rawPairs.push({
+              mint,
+              symbol:             p.baseToken?.symbol ?? "?",
+              name:               p.baseToken?.name   ?? "?",
+              imageUrl:           p.info?.imageUrl     ?? "",
+              poolAddress:        p.pairAddress        ?? "",
+              price:              parseFloat(p.priceUsd ?? "0") || 0,
+              marketCap:          p.marketCap ?? p.fdv ?? null,
+              liquidity:          Number(p.liquidity?.usd ?? 0),
+              volume24h:          vol24h,
+              volume1h:           vol1h,
+              volSpikeMultiplier: avg > 0 ? vol1h / avg : 0,
+              change5m:  Number(p.priceChange?.m5  ?? 0),
+              change1h:  Number(p.priceChange?.h1  ?? 0),
+              change24h: Number(p.priceChange?.h24 ?? 0),
+              dexScreenerUrl: p.url ?? "",
+            });
           }
+          console.log(`[TradingEngine] Fallback DexScreener: ${rawPairs.length} токенов`);
         }
       }
-    } catch { /* give up */ }
+    } catch (e: any) {
+      console.warn("[TradingEngine] DexScreener fallback failed:", e.message);
+    }
   }
 
   return rawPairs
     .filter((p: any) => p.mint && p.price > 0 && p.liquidity > 0)
     .map((p: any): ScanResult => {
       const { signal, score } = computeAiSignal({
-        change5m: p.change5m ?? 0,
-        change1h: p.change1h ?? 0,
-        change24h: p.change24h ?? 0,
-        volSpikeMultiplier: p.volSpikeMultiplier ?? 0,
+        change5m:           Number(p.change5m           ?? 0),
+        change1h:           Number(p.change1h           ?? 0),
+        change24h:          Number(p.change24h          ?? 0),
+        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
       });
       return {
         mint:               p.mint,
@@ -342,15 +362,15 @@ export async function fetchScanResults(type: "boosted" | "latest" = "boosted"): 
         name:               p.name   ?? "?",
         imageUrl:           p.imageUrl ?? "",
         poolAddress:        p.poolAddress ?? "",
-        price:              p.price,
+        price:              Number(p.price),
         marketCap:          Number(p.marketCap ?? 0),
-        liquidity:          p.liquidity,
-        volume24h:          p.volume24h ?? 0,
-        volume1h:           p.volume1h  ?? 0,
-        volSpikeMultiplier: p.volSpikeMultiplier ?? 0,
-        change5m:           p.change5m  ?? 0,
-        change1h:           p.change1h  ?? 0,
-        change24h:          p.change24h ?? 0,
+        liquidity:          Number(p.liquidity),
+        volume24h:          Number(p.volume24h  ?? 0),
+        volume1h:           Number(p.volume1h   ?? 0),
+        volSpikeMultiplier: Number(p.volSpikeMultiplier ?? 0),
+        change5m:           Number(p.change5m   ?? 0),
+        change1h:           Number(p.change1h   ?? 0),
+        change24h:          Number(p.change24h  ?? 0),
         aiScore:            score,
         aiSignal:           signal,
         dexScreenerUrl:     p.dexScreenerUrl ?? "",
