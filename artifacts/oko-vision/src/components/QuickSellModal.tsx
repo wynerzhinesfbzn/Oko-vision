@@ -240,10 +240,30 @@ export default function QuickSellModal({
     onClose();
   };
 
-  const onTriggerSellSuccess = (_result: SwapResult) => {
+  const onTriggerSellSuccess = (result: SwapResult) => {
     if (triggerSell) {
+      const soldAmt    = amount * triggerSell.sellPct / 100;
+      const soldUsd    = result.inputAmountUsd > 0 ? result.inputAmountUsd : usdValue * triggerSell.sellPct / 100;
+
+      let pnlPct: number | undefined;
+      try {
+        const { getInvested } = require("@/lib/portfolioData");
+        const costFull    = getInvested(mint, symbol);
+        const costPortion = costFull != null && amount > 0 ? costFull * (soldAmt / amount) : undefined;
+        pnlPct = costPortion && costPortion > 0 ? ((soldUsd - costPortion) / costPortion) * 100 : undefined;
+      } catch {}
+
+      addTrade({
+        symbol, mint, side: "SELL",
+        amount:   soldAmt,
+        price:    usdPrice,
+        usdValue: soldUsd,
+        fee:      result.fee ?? soldUsd * 0.01,
+        txHash:   result.txHash,
+        pnlPct,
+        timestamp: Date.now(),
+      });
       removeConditionalOrder(triggerSell.id);
-      addTrade({ symbol, side: "SELL", amount: amount * triggerSell.sellPct / 100, price: usdPrice, usdValue: usdValue * triggerSell.sellPct / 100, fee: usdEstimate * 0.01, timestamp: Date.now() });
       refresh();
     }
     setTriggerSell(null);

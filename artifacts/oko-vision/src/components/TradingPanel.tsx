@@ -575,20 +575,38 @@ function BuyTab({ token, onClose }: { token: PoolSignal; onClose: () => void }) 
   };
 
   const onDcaSwapSuccess = (result: SwapResult) => {
-    const amt = parseFloat(dcaAmt);
-    savePurchase(mint, symbol, result.inputAmountUsd || amt);
+    const amt      = parseFloat(dcaAmt);
+    const spentUsd = result.inputAmountUsd > 0 ? result.inputAmountUsd : amt;
+    const ep       = result.entryPrice > 0 ? result.entryPrice : price;
+
+    savePurchase(mint, symbol, spentUsd);
+
     addPosition({
       symbol, mint,
-      entryPrice: result.entryPrice > 0 ? result.entryPrice : price,
+      entryPrice:   ep,
       currentPrice: price,
-      amount: result.outAmountUi,
-      usdValue: result.inputAmountUsd || amt,
-      openedAt: Date.now(),
+      amount:       result.outAmountUi,
+      usdValue:     spentUsd,
+      openedAt:     Date.now(),
     });
+
+    // Record the first DCA buy in trade history (subsequent buys are recorded by PositionMonitor)
+    addTrade({
+      timestamp: Date.now(),
+      symbol,
+      mint,
+      side:     "BUY",
+      amount:   result.outAmountUi,
+      price:    ep,
+      usdValue: spentUsd,
+      fee:      result.fee,
+      txHash:   result.txHash,
+    });
+
     addDCAOrder({ symbol, mint, price, amountUsd: amt, intervalMs: dcaInterval.ms });
     refreshBalance();
     setStatus("success");
-    setStatusMsg(`DCA запущен · $${amt} ${dcaInterval.sublabel} · 1-я покупка подтверждена`);
+    setStatusMsg(`DCA запущен · ${amt} ${dcaInterval.sublabel} · 1-я покупка подтверждена · tx: ${result.txHash.slice(0, 10)}…`);
     setTimeout(() => { setStatus("idle"); onClose(); }, 3000);
   };
 
@@ -1081,54 +1099,76 @@ function SellTab({ token, onClose }: { token: PoolSignal; onClose: () => void })
   };
 
   const onSellSwapSuccess = (result: SwapResult) => {
-    const soldUsd = tokensToSell * price;
+    const soldUsd = result.inputAmountUsd > 0 ? result.inputAmountUsd : tokensToSell * price;
     const pnlPct  = position && position.entryPrice > 0
       ? ((price - position.entryPrice) / position.entryPrice) * 100
       : undefined;
 
-    // Record in trade history
+    // Record in trade history with real txHash from swap
     addTrade({
       timestamp: Date.now(),
       symbol,
       mint,
-      side: "SELL",
-      amount: tokensToSell,
+      side:     "SELL",
+      amount:   tokensToSell,
       price,
       usdValue: soldUsd,
-      fee: result.fee,
+      fee:      result.fee,
       pnlPct,
-      txHash: result.txHash,
+      txHash:   result.txHash,
     });
 
     // Remove or reduce tracked position
     if (position) {
       if (pctToSell >= 1) {
+        // Full sell — remove position entirely
         removePosition(position.id);
       } else {
-        // Partial sell — re-add position with reduced amount
+        // Partial sell — re-add remaining position with:
+        //   • current price for usdValue (not entry price — avoids stale P&L)
+        //   • NEW TP/SL/trailing settings from the user's current SellTab configuration
         const remainingAmt = position.amount - tokensToSell;
-        const remainingUsd = remainingAmt * position.entryPrice;
+        const remainingUsd = remainingAmt * price; // current price, not entry price
+
+        // Compute new SL/TP prices from user's settings (fallback to existing ones)
+        const newTpPrice     = effectiveTp
+          ? price * (1 + effectiveTp / 100)
+          : position.tpPrice;
+        const newSlPrice     = effectiveSl
+          ? price * (1 - effectiveSl / 100)
+          : position.slPrice;
+        const newTrailingPct = trailSlOn
+          ? effectiveTrailSl
+          : position.trailingPct;
+
         removePosition(position.id);
         addPosition({
           symbol,
           mint,
-          entryPrice: position.entryPrice,
+          logoURI:      position.logoURI,
+          entryPrice:   position.entryPrice,
           currentPrice: price,
-          amount: remainingAmt,
-          usdValue: remainingUsd,
-          openedAt: position.openedAt,
-          tpPrice: position.tpPrice,
-          slPrice: position.slPrice,
-          trailingPct: position.trailingPct,
+          amount:       remainingAmt,
+          usdValue:     remainingUsd,
+          costBasisUsd: position.costBasisUsd != null
+            ? position.costBasisUsd * (1 - pctToSell)
+            : undefined,
+          openedAt:     position.openedAt,
+          buyMcapUsd:   position.buyMcapUsd,
+          tpPrice:      newTpPrice,
+          slPrice:      newSlPrice,
+          trailingPct:  newTrailingPct,
+          highWaterMark: position.highWaterMark,
+          strategyId:   position.strategyId,
         });
       }
     }
 
-    // Update cost basis: reduce proportionally when selling
+    // Reduce cost basis proportionally
     recordSale(mint, symbol, pctToSell);
     refreshBalance();
     setStatus("success");
-    setStatusMsg(`Продано ${tokensToSell.toFixed(4)} ${symbol} · получено ${result.outAmountUi.toFixed(4)} SOL`);
+    setStatusMsg(`Продано ${tokensToSell.toFixed(4)} ${symbol} · получено ${result.outAmountUi.toFixed(4)} SOL · tx: ${result.txHash.slice(0, 10)}…`);
     setTimeout(() => { setStatus("idle"); onClose(); }, 3000);
   };
 
