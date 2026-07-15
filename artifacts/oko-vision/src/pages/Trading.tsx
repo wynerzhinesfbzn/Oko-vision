@@ -855,7 +855,12 @@ function AutoTab() {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function Trading() {
   const [, navigate]   = useLocation();
-  const [tab, setTab]  = useState<Tab>("swap");
+  // Read ?tab=auto (or other) from URL so burger-menu deep-link works
+  const [tab, setTab]  = useState<Tab>(() => {
+    const p = new URLSearchParams(window.location.search);
+    const t = p.get("tab");
+    return (t === "swap" || t === "sltp" || t === "risk" || t === "auto") ? t : "swap";
+  });
   const { autoTrading } = useTrading();
 
   const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [

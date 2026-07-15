@@ -114,6 +114,11 @@ function SlideMenu({ open, onClose, onNav, location }: SlideMenuProps) {
       path: "/backtesting", icon: <BarChart3 size={18} />,
       badge: "NEW", badgeColor: "#ffab00",
     },
+    {
+      label: "Авто Торговля", sublabel: "9 стратегий · Jupiter V6",
+      path: "/trading?tab=auto", icon: <Zap size={18} />,
+      badge: autoTrading ? "ON" : undefined, badgeColor: "#C9A84C",
+    },
   ];
 
   const NAV_SECONDARY: NavItem[] = [
