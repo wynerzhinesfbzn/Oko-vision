@@ -227,6 +227,10 @@ export interface ScanResult {
   aiScore:            number;
   aiSignal:           "BUY" | "SELL" | "HOLD";
   dexScreenerUrl:     string;
+  /** Unix ms timestamp when the PumpSwap pool was created (= migration time) */
+  pairCreatedAt:      number | null;
+  /** DEX identifier — for Solana this is always "pumpswap" */
+  dexId:              string;
 }
 
 /** Compute AI score + signal from price action + volume */

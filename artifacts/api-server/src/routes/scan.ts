@@ -79,7 +79,8 @@ function parsePair(pair: any, chainId: string): PairData | null {
     dexId:    pair.dexId ?? "unknown",
     chainId,
     dexScreenerUrl: pair.url ?? `https://dexscreener.com/${chainId}/${pair.pairAddress ?? ""}`,
-    pairCreatedAt:  pair.pairCreatedAt ? Number(pair.pairCreatedAt) * 1000 : null,
+    // DexScreener already returns pairCreatedAt in milliseconds — do NOT multiply by 1000
+    pairCreatedAt:  pair.pairCreatedAt ? Number(pair.pairCreatedAt) : null,
   };
 }
 
@@ -132,54 +133,53 @@ async function searchPairs(query: string, chain: string): Promise<PairData[]> {
   } catch { return []; }
 }
 
-// ── Comprehensive Solana scan ─────────────────────────────────────────────────
-
-// Terms verified to return ACTIVE Solana pairs — tested against live DexScreener API.
-// Active = vol1h > 0. Grouped by return size (large → small contributors).
-// Do NOT replace DEX names with generic brand terms (cat/dog/moon) — they return
-// mostly inactive pairs and near-zero micro-cap hits.
-const SOLANA_SEARCH_TERMS = [
-  // ── High-yield DEX names (28-30 active per query) ─────────────────────────
-  "raydium",          // Raydium DEX
-  "meteora",          // Meteora DEX
-  "pumpfun",          // pump.fun launchpad
-  "pump.fun",         // alternate spelling
-  "orca",             // Orca DEX
-  "jupiter sol",      // Jupiter aggregator
-
-  // ── Medium-yield micro-cap focused (8-20 active, target mcap 35k-600k) ───
-  "micro cap sol",    // micro-cap Solana — 20 active micro-caps
-  "meme sol",         // Solana meme tokens — 16 active micro-caps
-  "frog sol",         // frog-themed — 7 active micro-caps
-  "baby sol",         // baby-themed — 7 active micro-caps
-  "new sol",          // new Solana tokens — 14 active
-  "degen sol",        // degen tokens — 8 active micro-caps
-  "solana launch",    // new launches
-
-  // ── Broad meme/culture terms (5-13 active) ────────────────────────────────
-  "pepe",             // pepe-themed — 6 active
-  "bonk",             // BONK ecosystem — 13 active
-  "inu sol",          // inu-themed
-  "ai meme",          // AI meme tokens — 6 active micro-caps
-  "meme token",       // meme tokens
-  "memecoin",         // alternate spelling
-  "sol gem",          // gem-hunting terms
-  "defi sol",         // DeFi Solana tokens
-  "raydium sol",      // Raydium-specific pairs
+// ── PumpFun → PumpSwap Migration Scan ────────────────────────────────────────
+//
+// RULE: Only tokens that graduated from PumpFun's bonding curve and migrated
+//       to PumpSwap are valid. ALL other Solana DEXes (Raydium, Meteora, Orca,
+//       Jupiter) are excluded — their tokens were NOT verified by the PumpFun
+//       graduation process and are considered untrusted.
+//
+// IDENTIFIER: DexScreener marks every migrated token with dexId === "pumpswap".
+//             This is the single hard filter applied to every source.
+//
+// SEARCH STRATEGY: DexScreener search returns max 30 results per query.
+//   We use 28 diverse terms covering common PumpFun token name themes so
+//   the same tokens do not keep appearing. ALL results are post-filtered to
+//   dexId === "pumpswap" before entering the pool.
+//
+const PUMPSWAP_SEARCH_TERMS = [
+  // Theme: animals & creatures (most popular pump.fun category)
+  "cat",      "dog",      "frog",     "ape",      "bull",
+  "bear",     "inu",      "fish",     "shark",    "bird",
+  // Theme: internet culture & memes
+  "pepe",     "wojak",    "chad",     "meme",     "giga",
+  "sigma",    "based",    "wif",      "brain",    "degen",
+  // Theme: celebrity / political (high engagement on pump.fun)
+  "trump",    "elon",     "ansem",    "pnut",     "goat",
+  // Theme: crypto/money terms
+  "moon",     "pump",     "sol",
 ];
+
+/** Filter a raw pair list to only PumpSwap migrations */
+function keepPumpSwap(pairs: PairData[]): PairData[] {
+  return pairs.filter((p) => p.dexId === "pumpswap");
+}
 
 async function scanSolana(): Promise<PairData[]> {
   const allRaw: PairData[] = [];
 
+  const push = (arr: PairData[]) => { allRaw.push(...keepPumpSwap(arr)); };
+
   await Promise.all([
-    // Source 1: top boosted tokens
+    // Source 1: top boosted Solana tokens — keep only pumpswap
     (async () => {
       try {
         const j = await fetchJSON(`${DEX_BASE}/token-boosts/top/v1`);
         const addrs = (Array.isArray(j) ? j : [])
           .filter((b: any) => b.chainId === "solana").slice(0, 30)
           .map((b: any) => b.tokenAddress);
-        allRaw.push(...await fetchPairsForAddresses(addrs, "solana"));
+        push(await fetchPairsForAddresses(addrs, "solana"));
       } catch { /* skip */ }
     })(),
 
@@ -187,11 +187,10 @@ async function scanSolana(): Promise<PairData[]> {
     (async () => {
       try {
         const j = await fetchJSON(`${DEX_BASE}/token-boosts/latest/v1`);
-        const boosts = Array.isArray(j) ? j : [];
-        const addrs = boosts
+        const addrs = (Array.isArray(j) ? j : [])
           .filter((b: any) => b.chainId === "solana").slice(0, 30)
           .map((b: any) => b.tokenAddress);
-        allRaw.push(...await fetchPairsForAddresses(addrs, "solana"));
+        push(await fetchPairsForAddresses(addrs, "solana"));
       } catch { /* skip */ }
     })(),
 
@@ -199,27 +198,36 @@ async function scanSolana(): Promise<PairData[]> {
     (async () => {
       try {
         const j = await fetchJSON(`${DEX_BASE}/token-profiles/latest/v1`);
-        const profiles = Array.isArray(j) ? j : [];
-        const addrs = profiles
+        const addrs = (Array.isArray(j) ? j : [])
           .filter((p: any) => p.chainId === "solana").slice(0, 30)
           .map((p: any) => p.tokenAddress);
-        allRaw.push(...await fetchPairsForAddresses(addrs, "solana"));
+        push(await fetchPairsForAddresses(addrs, "solana"));
       } catch { /* skip */ }
     })(),
 
-    // Sources 4-15: parallel DexScreener search queries
-    ...SOLANA_SEARCH_TERMS.map((term) => searchPairs(term, "solana")),
-  ].map((p) => p.then((r) => { if (Array.isArray(r)) allRaw.push(...r); }).catch(() => {})));
+    // Sources 4-31: parallel theme searches — all post-filtered to pumpswap
+    ...PUMPSWAP_SEARCH_TERMS.map((term) =>
+      searchPairs(term, "solana")
+        .then((r) => push(r))
+        .catch(() => {})
+    ),
+  ]);
 
+  // PumpFun graduates start with ~$9k liquidity; accept down to $2k to catch
+  // tokens just minutes after migration before liquidity fully settles.
   const result = dedup(allRaw).filter((p) =>
     p.price > 0 &&
-    p.liquidity >= 5_000 &&
-    // Require at least some market activity — filters out stale/zombie pairs
-    // that have zero volume and zero price movement (score would be 50 = HOLD,
-    // rejected by every strategy's aiScoreMin anyway).
-    (p.volume24h > 100 || p.volume1h > 10 || Math.abs(p.change1h) > 0.5 || Math.abs(p.change5m) > 0.5)
+    p.liquidity >= 2_000 &&
+    // Must have at least some price or volume activity (not a dead zombie pair)
+    (p.volume24h > 50 || p.volume1h > 5 || Math.abs(p.change1h) > 0.3 || Math.abs(p.change5m) > 0.3)
   );
-  console.log(`[scan] Solana: ${allRaw.length} raw → ${result.length} active after dedup/filter`);
+
+  const raw = allRaw.length;
+  const nonPs = raw - result.length; // approx other-dex tokens caught and dropped
+  console.log(
+    `[scan] PumpSwap migrations: ${raw} raw (pumpswap only) → ${result.length} active` +
+    ` (dropped ${nonPs} zero-activity pairs)`
+  );
   return result;
 }
 

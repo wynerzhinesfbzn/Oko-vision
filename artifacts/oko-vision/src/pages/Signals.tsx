@@ -37,6 +37,20 @@ const RISK_LABEL: Record<Strategy["riskLevel"], string> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Format how long ago a PumpFun→PumpSwap migration happened */
+function fmtMigratedAgo(pairCreatedAt: number | null): string {
+  if (!pairCreatedAt) return "";
+  const diffMs = Date.now() - pairCreatedAt;
+  if (diffMs < 0) return "";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1)   return "только что";
+  if (mins < 60)  return `${mins}м назад`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return `${hrs}ч назад`;
+  const days = Math.floor(hrs / 24);
+  return `${days}д назад`;
+}
+
 function fmtNum(n: number): string {
   if (!n || n <= 0) return "—";
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
@@ -107,6 +121,8 @@ async function fetchTokens(chain: "solana" | "robinhood"): Promise<ScanResult[]>
         aiScore:   score,
         aiSignal:  signal,
         dexScreenerUrl: p.dexScreenerUrl ?? "",
+        pairCreatedAt:  p.pairCreatedAt ? Number(p.pairCreatedAt) : null,
+        dexId:          p.dexId ?? "unknown",
       };
     });
 }
@@ -166,6 +182,27 @@ function SignalCard({ token, strategy, onBuy }: {
             <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 7, letterSpacing: "0.06em" }}>SCORE</div>
           </div>
         </div>
+
+        {/* PumpFun → PumpSwap migration badge (Solana only) */}
+        {token.dexId === "pumpswap" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 8 }}>
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "3px 8px", borderRadius: 7,
+              background: "rgba(153,69,255,0.10)",
+              border: "1px solid rgba(153,69,255,0.30)",
+            }}>
+              <span style={{ fontSize: 8, fontWeight: 800, color: "#9945FF", letterSpacing: "0.05em" }}>
+                🔄 PumpFun → PumpSwap
+              </span>
+            </div>
+            {token.pairCreatedAt && (
+              <span style={{ fontSize: 8, color: "rgba(255,255,255,0.25)", fontFamily: "monospace" }}>
+                {fmtMigratedAgo(token.pairCreatedAt)}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Metrics 2×2 */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 8 }}>
@@ -416,7 +453,7 @@ export default function Signals() {
               ⚡ Сигналы по стратегиям
             </h1>
             <p style={{ margin: "4px 0 0", color: "rgba(255,255,255,0.28)", fontSize: 11 }}>
-              Реальные токены · DexScreener · 300+ источников · Ручной вход
+              🔄 Только PumpFun → PumpSwap миграции · Выпускники бондинговой кривой · Ручной вход
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
