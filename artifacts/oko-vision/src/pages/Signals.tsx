@@ -160,14 +160,31 @@ function parsePairs(pairs: any[], defaultDex: string): ScanResult[] {
  * URL is built from strategy parameters (mcapMin + liquidityMin).
  * profile=0 avoids Cloudflare bot-detection on smaller chains (e.g. Robinhood).
  */
+/**
+ * Poll /api/screener until data is ready (fire-and-forget server returns 202 while loading).
+ * Retries every 3s for up to 5 minutes. Returns [] on timeout.
+ */
 async function fetchScreenerTokens(screenerUrl: string): Promise<ScanResult[]> {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const apiUrl = `${origin}/api/screener?url=${encodeURIComponent(screenerUrl)}`;
-  const res    = await fetch(apiUrl, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok) throw new Error(`Screener API ${res.status}`);
-  const data: { pairs?: any[] } = await res.json();
-  // Use dexId from pair data (pumpswap for Solana, uniswap for Robinhood, etc.)
-  return parsePairs(data.pairs ?? [], "unknown");
+  const MAX_ATTEMPTS = 100; // 100 × 3s = 5 min max
+
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`Screener API ${res.status}`);
+
+    const data: { pairs?: any[]; status?: string } = await res.json();
+
+    // 202: server is still scraping — wait and retry
+    if (res.status === 202 || data.status === "loading") {
+      await new Promise<void>((r) => setTimeout(r, 3_000));
+      continue;
+    }
+
+    // 200 with data
+    return parsePairs(data.pairs ?? [], "unknown");
+  }
+  return []; // timed out
 }
 
 // ── Signal Card ───────────────────────────────────────────────────────────────

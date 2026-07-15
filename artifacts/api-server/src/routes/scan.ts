@@ -10,7 +10,7 @@
  */
 
 import { Router } from "express";
-import { scrapeScreener } from "./screener.js";
+import { getScreenerData } from "./screener.js";
 
 const router  = Router();
 const DEX_BASE = "https://api.dexscreener.com";
@@ -375,43 +375,38 @@ router.get("/scan", async (req, res): Promise<void> => {
 
 // ── Route: GET /api/screener ──────────────────────────────────────────────────
 //
-// Scrapes a DexScreener screener URL via Playwright (headless Chromium).
-// Intercepts the internal io.dexscreener.com API response and returns parsed pairs.
+// Fire-and-forget + polling pattern (avoids Replit/Vite proxy timeouts).
+//
+// Returns immediately:
+//   200 { pairs, source, count }  — data available (cache hit or stale-while-revalidate)
+//   202 { status: "loading" }     — scrape in progress, poll again in 3s
 //
 // Query params:
-//   url   — full dexscreener.com screener URL (percent-encoded)
+//   url — full dexscreener.com screener URL (percent-encoded)
 //
-// Example:
-//   GET /api/screener?url=https%3A%2F%2Fdexscreener.com%2F%3FrankBy%3DtrendingScoreH6...
-//
-router.get("/screener", async (req, res): Promise<void> => {
+router.get("/screener", (req, res): void => {
   const url = req.query.url as string;
   if (!url) {
     res.status(400).json({ error: "url param required" });
     return;
   }
 
-  // Note: scrapeScreener() handles its own caching (60s live + last-good fallback).
-  // We do NOT add a second cache layer here — that caused stale empty results.
-  try {
-    console.log(`[screener] launching Playwright for: ${url.slice(0, 80)}...`);
-    const rawPairs = await scrapeScreener(url);
+  const result = getScreenerData(url);
 
-    // scrapeScreener returns raw DexScreener pair objects from the public API.
-    // parsePair converts them to our PairData schema.
-    const parsed: PairData[] = rawPairs
-      .map((p: any) => parsePair(p, p.chainId ?? "solana"))
-      .filter((p): p is PairData => p !== null);
-
-    const deduped = dedup(parsed).filter((p) => p.price > 0);
-    console.log(`[screener] ${rawPairs.length} raw → ${deduped.length} parsed pairs`);
-
-    const source = rawPairs.length > 0 ? "live" : "empty";
-    res.json({ source, count: deduped.length, pairs: deduped });
-  } catch (e: any) {
-    console.error("[screener] error:", e.message);
-    res.status(503).json({ error: e.message, source: "error", count: 0, pairs: [] });
+  if (!result.ready) {
+    res.status(202).json({ status: "loading" });
+    return;
   }
+
+  // Parse raw DexScreener pairs → our PairData schema
+  const parsed: PairData[] = result.pairs
+    .map((p: any) => parsePair(p, p.chainId ?? "solana"))
+    .filter((p): p is PairData => p !== null);
+
+  const deduped = dedup(parsed).filter((p) => p.price > 0);
+  console.log(`[screener] ${result.pairs.length} raw → ${deduped.length} parsed pairs`);
+
+  res.json({ source: result.source, count: deduped.length, pairs: deduped });
 });
 
 // ── Route: GET /api/price/:mint ───────────────────────────────────────────────
