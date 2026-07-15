@@ -7,7 +7,8 @@
  * 2. DCA (interval buying)    — real Jupiter buy on each scheduled interval.
  * 3. Dip buy                  — auto-buy when price drops dipPct% from entry.
  *
- * For Phantom / adapter wallets all auto-execution is skipped (cannot sign).
+ * For Phantom / adapter wallets: SL/TP/trailing are monitored and logged only
+ * (cannot auto-sign). DCA and Dip-buy are skipped entirely — no simulation.
  * Returns null — no rendered UI.
  */
 
@@ -43,6 +44,7 @@ export default function PositionMonitor() {
     addPosition,
     addTrade,
     setPositionHighWater,
+    updatePositionPrice,
     markDipBought,
     dcaOrders,
     updateDCAOrder,
@@ -78,6 +80,8 @@ export default function PositionMonitor() {
 
       // ──────────────────────────────────────────────────────────────
       // 1. TP / SL / Trailing Stop monitoring
+      //    Price is fetched for ALL positions so currentPrice stays fresh.
+      //    Auto-sell only for generated wallets.
       // ──────────────────────────────────────────────────────────────
       const watchedForSell = posRef.current.filter(
         (p) => p.amount > 0 && (p.tpPrice || p.slPrice || p.trailingPct),
@@ -89,6 +93,10 @@ export default function PositionMonitor() {
         const price = await fetchPrice(pos.mint);
         if (!price || price <= 0) continue;
 
+        // Always keep currentPrice fresh — used by profit lock in AutoTrader
+        updatePositionPrice(pos.mint, price);
+
+        // Update trailing high-water mark (only moves up)
         if (pos.trailingPct) setPositionHighWater(pos.mint, price);
 
         let sellReason: string | null = null;
@@ -106,52 +114,60 @@ export default function PositionMonitor() {
         }
 
         if (!sellReason) continue;
+
+        if (!keypair || !addr) {
+          // Adapter wallet — can't auto-sign, just log
+          console.log(`[Monitor] ${pos.symbol}: ${sellReason} — продай вручную (адаптер-кошелёк)`);
+          continue;
+        }
+
         sellInFlight.current.add(pos.id);
         console.log(`[Monitor] SELL ${pos.symbol}: ${sellReason}`);
 
-        if (keypair && addr) {
-          try {
-            const usdValue = pos.amount * price;
-            const pnlPct   = pos.entryPrice > 0
-              ? ((price - pos.entryPrice) / pos.entryPrice) * 100
-              : 0;
+        try {
+          const usdValue = pos.amount * price;
+          const pnlPct   = pos.entryPrice > 0
+            ? ((price - pos.entryPrice) / pos.entryPrice) * 100
+            : 0;
 
-            const result = await executeSwap({
-              userAddress:      addr,
-              keypair,
-              inputMint:        pos.mint,
-              outputMint:       SOL_MINT,
-              inputAmountUsd:   usdValue,
-              inputTokenAmount: pos.amount,
-              solPriceUsd:      solUsd,
-              slippageBps:      SELL_SLIPPAGE_BPS,
-              priorityMode:     "fast",
-            });
+          const result = await executeSwap({
+            userAddress:      addr,
+            keypair,
+            inputMint:        pos.mint,
+            outputMint:       SOL_MINT,
+            inputAmountUsd:   usdValue,
+            inputTokenAmount: pos.amount,
+            solPriceUsd:      solUsd,
+            slippageBps:      SELL_SLIPPAGE_BPS,
+            priorityMode:     "fast",
+          });
 
-            addTrade({
-              timestamp: Date.now(), symbol: pos.symbol, mint: pos.mint,
-              side: "SELL", amount: pos.amount, price,
-              usdValue, fee: result.fee, pnlPct, txHash: result.txHash,
-            });
-            recordSale(pos.mint, pos.symbol, 1);
-            removePosition(pos.id);
-            refreshBalance();
-            console.log(`[Monitor] ✓ Auto-sold ${pos.symbol}: ${result.txHash}`);
-          } catch (e) {
-            console.error(`[Monitor] Auto-sell failed for ${pos.symbol}:`, e);
-            sellInFlight.current.delete(pos.id);
-          }
-        } else {
-          console.log(`[Monitor] ${pos.symbol}: ${sellReason} — ручная продажа (адаптер-кошелёк)`);
+          addTrade({
+            timestamp: Date.now(), symbol: pos.symbol, mint: pos.mint,
+            side: "SELL", amount: pos.amount, price,
+            usdValue, fee: result.fee, pnlPct, txHash: result.txHash,
+          });
+          recordSale(pos.mint, pos.symbol, 1);
+          removePosition(pos.id);
+          refreshBalance();
+          console.log(`[Monitor] ✓ Auto-sold ${pos.symbol}: ${result.txHash}`);
+        } catch (e) {
+          console.error(`[Monitor] Auto-sell failed for ${pos.symbol}:`, e);
           sellInFlight.current.delete(pos.id);
         }
       }
 
       // ──────────────────────────────────────────────────────────────
       // 2. DCA — interval buy execution
+      //    Only for generated wallets. No simulation for adapter wallets.
       // ──────────────────────────────────────────────────────────────
-      const now      = Date.now();
-      const dueDCA   = dcaRef.current.filter((o) => o.active && o.nextBuyAt <= now);
+      if (!keypair || !addr) {
+        // Skip DCA and Dip buy entirely for non-generated wallets
+        return;
+      }
+
+      const now    = Date.now();
+      const dueDCA = dcaRef.current.filter((o) => o.active && o.nextBuyAt <= now);
 
       for (const order of dueDCA) {
         const key = `dca-${order.id}`;
@@ -166,49 +182,20 @@ export default function PositionMonitor() {
 
         console.log(`[Monitor] DCA ${order.symbol}: $${order.amountUsd}`);
 
-        if (keypair && addr) {
-          try {
-            const result = await executeSwap({
-              userAddress:    addr,
-              keypair,
-              inputMint:      SOL_MINT,
-              outputMint:     order.mint,
-              inputAmountUsd: order.amountUsd,
-              solPriceUsd:    solUsd,
-              slippageBps:    BUY_SLIPPAGE_BPS,
-              priorityMode:   "normal",
-            });
+        try {
+          const result = await executeSwap({
+            userAddress:    addr,
+            keypair,
+            inputMint:      SOL_MINT,
+            outputMint:     order.mint,
+            inputAmountUsd: order.amountUsd,
+            solPriceUsd:    solUsd,
+            slippageBps:    BUY_SLIPPAGE_BPS,
+            priorityMode:   "normal",
+          });
 
-            const tokenQty = result.outAmountUi;
-            savePurchase(order.mint, order.symbol, order.amountUsd);
-
-            addPosition({
-              symbol: order.symbol, mint: order.mint,
-              entryPrice: price, currentPrice: price,
-              amount: tokenQty, usdValue: order.amountUsd,
-              openedAt: now,
-            });
-
-            addTrade({
-              timestamp: now, symbol: order.symbol, mint: order.mint,
-              side: "BUY", amount: tokenQty, price,
-              usdValue: order.amountUsd, fee: result.fee, txHash: result.txHash,
-            });
-
-            updateDCAOrder(order.id, {
-              totalSpent:   order.totalSpent + order.amountUsd,
-              buysExecuted: order.buysExecuted + 1,
-              nextBuyAt:    now + order.intervalMs,
-            });
-
-            refreshBalance();
-            console.log(`[Monitor] ✓ DCA buy ${order.symbol}: ${result.txHash}`);
-          } catch (e) {
-            console.error(`[Monitor] DCA buy failed for ${order.symbol}:`, e);
-          }
-        } else {
-          // Phantom / adapter: simulate the buy (update position state only)
-          const tokenQty = price > 0 ? order.amountUsd / price : 0;
+          const tokenQty = result.outAmountUi;
+          savePurchase(order.mint, order.symbol, order.amountUsd);
 
           addPosition({
             symbol: order.symbol, mint: order.mint,
@@ -216,16 +203,25 @@ export default function PositionMonitor() {
             amount: tokenQty, usdValue: order.amountUsd,
             openedAt: now,
           });
+
           addTrade({
             timestamp: now, symbol: order.symbol, mint: order.mint,
             side: "BUY", amount: tokenQty, price,
-            usdValue: order.amountUsd, fee: order.amountUsd * 0.002,
+            usdValue: order.amountUsd, fee: result.fee, txHash: result.txHash,
           });
+
           updateDCAOrder(order.id, {
             totalSpent:   order.totalSpent + order.amountUsd,
             buysExecuted: order.buysExecuted + 1,
             nextBuyAt:    now + order.intervalMs,
           });
+
+          refreshBalance();
+          console.log(`[Monitor] ✓ DCA buy ${order.symbol}: ${result.txHash}`);
+        } catch (e) {
+          console.error(`[Monitor] DCA buy failed for ${order.symbol}:`, e);
+          // Still advance nextBuyAt so we retry next interval, not immediately
+          updateDCAOrder(order.id, { nextBuyAt: now + order.intervalMs });
         }
 
         buyInFlight.current.delete(key);
@@ -233,6 +229,7 @@ export default function PositionMonitor() {
 
       // ──────────────────────────────────────────────────────────────
       // 3. Dip buy monitoring
+      //    Only for generated wallets. No simulation for adapter wallets.
       // ──────────────────────────────────────────────────────────────
       const dipPositions = posRef.current.filter(
         (p) => p.dipPct && p.dipAmountUsd && !p.dipBought && p.amount > 0,
@@ -250,46 +247,23 @@ export default function PositionMonitor() {
 
         buyInFlight.current.add(key);
         const dipAmt = pos.dipAmountUsd!;
-        console.log(`[Monitor] DIP ${pos.symbol}: ценa $${price} ≤ порог $${dipThreshold.toFixed(6)} → докупка $${dipAmt}`);
+        console.log(`[Monitor] DIP ${pos.symbol}: цена $${price} ≤ порог $${dipThreshold.toFixed(6)} → докупка $${dipAmt}`);
 
-        if (keypair && addr) {
-          try {
-            const result = await executeSwap({
-              userAddress:    addr,
-              keypair,
-              inputMint:      SOL_MINT,
-              outputMint:     pos.mint,
-              inputAmountUsd: dipAmt,
-              solPriceUsd:    solUsd,
-              slippageBps:    BUY_SLIPPAGE_BPS,
-              priorityMode:   "normal",
-            });
+        try {
+          const result = await executeSwap({
+            userAddress:    addr,
+            keypair,
+            inputMint:      SOL_MINT,
+            outputMint:     pos.mint,
+            inputAmountUsd: dipAmt,
+            solPriceUsd:    solUsd,
+            slippageBps:    BUY_SLIPPAGE_BPS,
+            priorityMode:   "normal",
+          });
 
-            const tokenQty = result.outAmountUi;
-            savePurchase(pos.mint, pos.symbol, dipAmt);
-
-            addPosition({
-              symbol: pos.symbol, mint: pos.mint,
-              entryPrice: price, currentPrice: price,
-              amount: tokenQty, usdValue: dipAmt,
-              openedAt: now,
-            });
-            addTrade({
-              timestamp: now, symbol: pos.symbol, mint: pos.mint,
-              side: "BUY", amount: tokenQty, price,
-              usdValue: dipAmt, fee: result.fee, txHash: result.txHash,
-            });
-
-            markDipBought(pos.id);
-            refreshBalance();
-            console.log(`[Monitor] ✓ Dip buy ${pos.symbol}: ${result.txHash}`);
-          } catch (e) {
-            console.error(`[Monitor] Dip buy failed for ${pos.symbol}:`, e);
-          }
-        } else {
-          // Phantom: simulate dip buy
-          const tokenQty = price > 0 ? dipAmt / price : 0;
+          const tokenQty = result.outAmountUi;
           savePurchase(pos.mint, pos.symbol, dipAmt);
+
           addPosition({
             symbol: pos.symbol, mint: pos.mint,
             entryPrice: price, currentPrice: price,
@@ -299,9 +273,14 @@ export default function PositionMonitor() {
           addTrade({
             timestamp: now, symbol: pos.symbol, mint: pos.mint,
             side: "BUY", amount: tokenQty, price,
-            usdValue: dipAmt, fee: dipAmt * 0.002,
+            usdValue: dipAmt, fee: result.fee, txHash: result.txHash,
           });
+
           markDipBought(pos.id);
+          refreshBalance();
+          console.log(`[Monitor] ✓ Dip buy ${pos.symbol}: ${result.txHash}`);
+        } catch (e) {
+          console.error(`[Monitor] Dip buy failed for ${pos.symbol}:`, e);
         }
 
         buyInFlight.current.delete(key);

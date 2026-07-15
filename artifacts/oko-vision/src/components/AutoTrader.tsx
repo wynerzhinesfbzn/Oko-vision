@@ -50,6 +50,20 @@ import {
   type ScanResult,
 } from "@/lib/tradingEngine";
 
+// Fetch live price from Jupiter Price API
+async function fetchLivePrice(mint: string): Promise<number | null> {
+  try {
+    const res  = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const json = await res.json() as Record<string, unknown>;
+    const p    = (json?.data as Record<string, { price?: string }>)?.[mint]?.price;
+    return p ? parseFloat(p) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SCAN_INTERVAL_MS        = 60_000;  // main scan loop
@@ -81,6 +95,7 @@ export default function AutoTrader() {
     tradeHistory,
     addPosition,
     addTrade,
+    updatePositionPrice,
     updatePositionSlPrice,
   } = useTrading();
 
@@ -380,19 +395,40 @@ export default function AutoTrader() {
   }, [executeStrategy]);
 
   // ── Profit Lock tick (30s) ─────────────────────────────────────────────────
-  const profitLockTick = useCallback(() => {
+  // Fetches LIVE prices from Jupiter — so trailing SL moves correctly as price rises.
+  const profitLockTick = useCallback(async () => {
     if (!autoTradingRef.current) return;
-    const positions = posRef.current;
+    const openPositions = posRef.current.filter((p) => p.amount > 0 && p.entryPrice > 0);
+    if (openPositions.length === 0) return;
 
-    for (const pos of positions) {
-      if (!pos.currentPrice || !pos.entryPrice) continue;
-      const newSl = computeProfitLockSlPrice(pos.entryPrice, pos.currentPrice, pos.slPrice);
+    // Fetch all prices in parallel (one request per unique mint)
+    const priceResults = await Promise.allSettled(
+      openPositions.map(async (pos) => {
+        const livePrice = await fetchLivePrice(pos.mint);
+        return { pos, livePrice };
+      }),
+    );
+
+    for (const r of priceResults) {
+      if (r.status !== "fulfilled") continue;
+      const { pos, livePrice } = r.value;
+      if (!livePrice || livePrice <= 0) continue;
+
+      // Keep currentPrice up-to-date in state (used everywhere for P&L display)
+      updatePositionPrice(pos.mint, livePrice);
+
+      // Compute profit-locked SL using live price
+      const newSl = computeProfitLockSlPrice(pos.entryPrice, livePrice, pos.slPrice);
       if (newSl !== null) {
-        console.log(`[AutoTrader] 🔒 Profit Lock ${pos.symbol}: SL ${pos.slPrice?.toFixed(6) ?? "none"} → ${newSl.toFixed(6)}`);
+        console.log(
+          `[AutoTrader] 🔒 Profit Lock ${pos.symbol}: ` +
+          `цена ${livePrice.toExponential(3)} (+${(((livePrice - pos.entryPrice) / pos.entryPrice) * 100).toFixed(0)}%) → ` +
+          `SL ${pos.slPrice?.toFixed(6) ?? "none"} → ${newSl.toFixed(6)}`,
+        );
         updatePositionSlPrice?.(pos.id, newSl);
       }
     }
-  }, [updatePositionSlPrice]);
+  }, [updatePositionPrice, updatePositionSlPrice]);
 
   // ── Request notification permission on first enable ────────────────────────
   useEffect(() => {
