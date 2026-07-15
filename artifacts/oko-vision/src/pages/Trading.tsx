@@ -4,7 +4,10 @@ import { ArrowLeft, ArrowDownUp, Settings2, Shield, Zap, AlertTriangle, CheckCir
 import { getJupiterQuote, SOL_MINT, USDC_MINT, KNOWN_TOKENS, PLATFORM_FEE_BPS, toLamports, fromLamports, type JupiterQuote } from "@/lib/jupiter";
 import { useTrading, type SLTPSettings, type RiskSettings } from "@/context/TradingContext";
 import { useOkoWallet } from "@/context/WalletContext";
+import { useBalance } from "@/context/BalanceContext";
 import { formatNum } from "@/lib/geckoTerminal";
+import PasswordSignModal from "@/components/PasswordSignModal";
+import type { SwapResult } from "@/lib/swapExecutor";
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 type Tab = "swap" | "sltp" | "risk" | "auto";
@@ -78,17 +81,19 @@ function SliderRow({ label, value, onChange, min, max, step, color = "#C9A84C", 
 
 // ── Swap Tab ──────────────────────────────────────────────────────────────────
 function SwapTab() {
-  const { address, connected } = useOkoWallet();
+  const { address, connected, walletType } = useOkoWallet();
   const { checkTradeRisk, riskSettings, addTrade, addPosition, sltpSettings } = useTrading();
+  const { solPrice } = useBalance();
 
-  const [inputMint,  setInputMint]  = useState(SOL_MINT);
-  const [outputMint, setOutputMint] = useState(USDC_MINT);
-  const [amount,     setAmount]     = useState("1");
-  const [slippage,   setSlippage]   = useState(50); // bps
-  const [quote,      setQuote]      = useState<JupiterQuote | null>(null);
-  const [loading,    setLoading]    = useState(false);
-  const [error,      setError]      = useState<string | null>(null);
-  const [txStatus,   setTxStatus]   = useState<"idle" | "building" | "signing" | "success" | "fail">("idle");
+  const [inputMint,    setInputMint]    = useState(SOL_MINT);
+  const [outputMint,   setOutputMint]   = useState(USDC_MINT);
+  const [amount,       setAmount]       = useState("1");
+  const [slippage,     setSlippage]     = useState(50); // bps
+  const [quote,        setQuote]        = useState<JupiterQuote | null>(null);
+  const [loading,      setLoading]      = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
+  const [txStatus,     setTxStatus]     = useState<"idle" | "building" | "signing" | "success" | "fail">("idle");
+  const [signModalOpen, setSignModalOpen] = useState(false);
 
   const inputToken  = KNOWN_TOKENS[inputMint]  ?? { symbol: inputMint.slice(0, 4), decimals: 9 };
   const outputToken = KNOWN_TOKENS[outputMint] ?? { symbol: outputMint.slice(0, 4), decimals: 6 };
@@ -129,34 +134,67 @@ function SwapTab() {
   const usdIn = inputMint === USDC_MINT ? parseFloat(amount) : (parseFloat(amount) * 0); // simplified
   const riskCheck = checkTradeRisk(parseFloat(amount) * 1); // rough USD estimate
 
-  const executeSwap = async () => {
+  // Determine swap side and compute USD input amount for PasswordSignModal
+  const isBuy = inputMint === SOL_MINT || inputMint === USDC_MINT;
+  const inputAmountUsd = inputMint === SOL_MINT
+    ? parseFloat(amount || "0") * (solPrice > 0 ? solPrice : 150)
+    : parseFloat(amount || "0"); // USDC or other stablecoins: 1:1
+
+  const executeSwap = () => {
     if (!address || !quote) return;
-    const rCheck = checkTradeRisk(parseFloat(amount) * 100);
+    const rCheck = checkTradeRisk(inputAmountUsd);
     if (!rCheck.allowed) {
       setError(rCheck.reason ?? "Сделка заблокирована риск-менеджером");
       return;
     }
-    setTxStatus("building");
-    try {
-      // In production: call getSwapTransaction + sign with wallet adapter
-      // Here we simulate the flow
-      await new Promise((r) => setTimeout(r, 1200));
-      setTxStatus("signing");
-      await new Promise((r) => setTimeout(r, 900));
-      setTxStatus("success");
-      addTrade({
-        timestamp: Date.now(), symbol: outputToken.symbol, side: "BUY",
-        amount: outAmt ?? 0, price: outAmt ? parseFloat(amount) / outAmt : 0,
-        usdValue: parseFloat(amount) * 100, fee: (parseFloat(amount) * 100 * PLATFORM_FEE_BPS) / 10000,
+    setError(null);
+    setSignModalOpen(true);
+  };
+
+  const handleSwapSuccess = (result: SwapResult) => {
+    const price    = result.entryPrice;
+    const tokenQty = result.outAmountUi;
+    const side     = isBuy ? ("BUY" as const) : ("SELL" as const);
+    const symbol   = isBuy ? outputToken.symbol : inputToken.symbol;
+    const mint     = isBuy ? outputMint : inputMint;
+
+    addTrade({
+      timestamp: Date.now(),
+      symbol,
+      mint,
+      side,
+      amount:   tokenQty,
+      price,
+      usdValue: result.inputAmountUsd,
+      fee:      result.fee,
+      txHash:   result.txHash,
+    });
+
+    if (isBuy) {
+      const sl = sltpSettings.slPct > 0 ? price * (1 - sltpSettings.slPct / 100) : undefined;
+      const tp = sltpSettings.tpPct > 0 ? price * (1 + sltpSettings.tpPct / 100) : undefined;
+      addPosition({
+        symbol,
+        mint,
+        entryPrice:    price,
+        currentPrice:  price,
+        amount:        tokenQty,
+        usdValue:      result.inputAmountUsd,
+        costBasisUsd:  result.inputAmountUsd,
+        openedAt:      Date.now(),
+        slPrice:       sl,
+        tpPrice:       tp,
+        trailingPct:   sltpSettings.trailingPct > 0 ? sltpSettings.trailingPct : undefined,
+        highWaterMark: price,
       });
-      setTimeout(() => setTxStatus("idle"), 3000);
-    } catch {
-      setTxStatus("fail");
-      setTimeout(() => setTxStatus("idle"), 3000);
     }
+
+    setTxStatus("success");
+    setTimeout(() => setTxStatus("idle"), 3000);
   };
 
   return (
+    <>
     <div className="space-y-4">
       {/* Profitability check banner */}
       {!riskCheck.allowed && (
@@ -319,6 +357,28 @@ function SwapTab() {
         </button>
       )}
     </div>
+
+    {/* Real Jupiter swap via PasswordSignModal */}
+    {signModalOpen && address && (
+      <PasswordSignModal
+        open={signModalOpen}
+        onClose={() => setSignModalOpen(false)}
+        onSuccess={handleSwapSuccess}
+        userAddress={address}
+        walletType={walletType}
+        inputMint={inputMint}
+        outputMint={outputMint}
+        inputAmountUsd={inputAmountUsd}
+        inputTokenAmount={!isBuy ? parseFloat(amount || "0") : undefined}
+        inputDecimals={!isBuy ? inputToken.decimals : undefined}
+        solPriceUsd={solPrice > 0 ? solPrice : 150}
+        slippageBps={slippage}
+        autoPriority={true}
+        tokenSymbol={isBuy ? outputToken.symbol : inputToken.symbol}
+        side={isBuy ? "buy" : "sell"}
+      />
+    )}
+    </>
   );
 }
 

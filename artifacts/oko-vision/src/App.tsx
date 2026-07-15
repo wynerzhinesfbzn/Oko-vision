@@ -9,6 +9,7 @@ import { EVMWalletProvider }     from "@/context/EVMWalletContext";
 import { initTheme }             from "@/lib/themes";
 import { saveRefCode, registerReferral, ensureRefLinkRegistered } from "@/lib/referral";
 import PositionMonitor from "@/components/PositionMonitor";
+import AutoTrader from "@/components/AutoTrader";
 
 import Home from "@/pages/Home";
 
@@ -89,6 +90,7 @@ function App() {
             <TradingProvider>
               <EVMWalletProvider>
                 <PositionMonitor />
+                <AutoTrader />
                 <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
                   <ReferralBridge />
                   <Router />
