@@ -691,30 +691,46 @@ function Toggle({ on, onChange, disabled }: { on: boolean; onChange: () => void;
 
 // ── Auto-Trading Tab ───────────────────────────────────────────────────────────
 function AutoTab() {
-  const { autoTrading, setAutoTrading } = useTrading();
+  const {
+    autoTrading, setAutoTrading,
+    autoStrategies, setAutoStrategies,
+    dailyTargetUsd, setDailyTargetUsd,
+  } = useTrading();
   const { connected, address } = useOkoWallet();
 
-  const [selectedId, setSelectedId]   = useState<string>(() => localStorage.getItem("oko-auto-strategy") ?? "early-migration");
-  const [expanded,   setExpanded]     = useState<string | null>(null);
-  const [botActive,  setBotActive]    = useState(autoTrading);
+  const [expanded,       setExpanded]     = useState<string | null>(null);
+  const [botActive,      setBotActive]    = useState(autoTrading);
+  const [dailyTargetStr, setDailyTargetStr] = useState(() => dailyTargetUsd > 0 ? String(dailyTargetUsd) : "");
 
   // Keep local botActive in sync with context
   useEffect(() => { setBotActive(autoTrading); }, [autoTrading]);
 
   const activateBot = (on: boolean) => {
     if (!connected) return;
+    if (on && autoStrategies.length === 0) return; // need at least one strategy
     setBotActive(on);
     setAutoTrading(on);
   };
 
-  const selectStrategy = (id: string) => {
-    setSelectedId(id);
-    localStorage.setItem("oko-auto-strategy", id);
-    // Turn off bot if strategy changes while running
-    if (botActive) { setBotActive(false); setAutoTrading(false); }
+  const toggleStrategy = (id: string) => {
+    const next = autoStrategies.includes(id)
+      ? autoStrategies.filter((s) => s !== id)
+      : [...autoStrategies, id];
+    setAutoStrategies(next);
+    // Also sync legacy single-key (backward compat for PositionMonitor etc.)
+    if (next.length > 0) localStorage.setItem("oko-auto-strategy", next[0]);
+    // Stop bot if all strategies removed
+    if (next.length === 0 && botActive) { setBotActive(false); setAutoTrading(false); }
   };
 
-  const active = STRATEGIES.find((s) => s.id === selectedId) ?? STRATEGIES[3];
+  const commitDailyTarget = (raw: string) => {
+    const v = parseFloat(raw);
+    setDailyTargetUsd(isNaN(v) || v <= 0 ? 0 : v);
+  };
+
+  const activeCount  = autoStrategies.length;
+  const primaryId    = autoStrategies[0] ?? "early-migration";
+  const primaryStrat = STRATEGIES.find((s) => s.id === primaryId) ?? STRATEGIES[3];
 
   const shortAddr = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
@@ -768,29 +784,66 @@ function AutoTab() {
               {botActive ? "🟢 Бот запущен" : "⚪ Бот остановлен"}
             </div>
             <div style={{ color: "rgba(255,255,255,0.3)", fontSize: "9px", marginTop: "3px" }}>
-              {botActive ? `Стратегия: ${active.name}` : "Выберите стратегию и запустите"}
+              {botActive
+                ? `${activeCount} ${activeCount === 1 ? "стратегия" : activeCount < 5 ? "стратегии" : "стратегий"} · Score ≥ 70 · Jupiter V6`
+                : activeCount === 0
+                ? "Выберите хотя бы одну стратегию"
+                : "Нажмите тогл для запуска"}
             </div>
           </div>
-          <Toggle on={botActive} onChange={() => activateBot(!botActive)} disabled={!connected} />
+          <Toggle
+            on={botActive}
+            onChange={() => activateBot(!botActive)}
+            disabled={!connected || activeCount === 0}
+          />
         </div>
         {botActive && (
           <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-xl"
             style={{ background: "rgba(201,168,76,0.06)", border: "1px solid rgba(201,168,76,0.18)" }}>
             <TrendingUp size={12} style={{ color: "#C9A84C" }} />
             <span style={{ color: "rgba(255,255,255,0.45)", fontSize: "9px", lineHeight: "1.5" }}>
-              AI сигналы Score ≥ 70 · Jupiter V6 · Priority Fee: <span style={{ color: "#C9A84C" }}>{active.priorityFee}</span>
+              Параллельное сканирование · Priority Fee: <span style={{ color: "#C9A84C" }}>{primaryStrat.priorityFee}</span>
+              {dailyTargetUsd > 0 && <> · Таргет: <span style={{ color: "#C9A84C" }}>${dailyTargetUsd}</span></>}
             </span>
           </div>
         )}
+
+        {/* Daily target */}
+        <div className="flex items-center gap-3 mt-3">
+          <span style={{ color: "rgba(255,255,255,0.4)", fontSize: "9px", whiteSpace: "nowrap" }}>ДНЕВНОЙ ТАРГЕТ ($)</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0 = выкл"
+            value={dailyTargetStr}
+            onChange={(e) => setDailyTargetStr(e.target.value)}
+            onBlur={(e) => commitDailyTarget(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-1.5 text-right"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.10)",
+              color: "rgba(255,255,255,0.75)",
+              fontSize: "11px",
+              fontFamily: "monospace",
+              outline: "none",
+            }}
+          />
+        </div>
       </GlassCard>
 
       {/* ── 9 стратегий ── */}
-      <div style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px", fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.1em", padding: "0 2px" }}>
-        ВЫБЕРИТЕ СТРАТЕГИЮ
+      <div className="flex items-center justify-between" style={{ padding: "0 2px" }}>
+        <span style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px", fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "0.1em" }}>
+          СТРАТЕГИИ ({activeCount} активно)
+        </span>
+        {activeCount > 1 && (
+          <span style={{ color: "rgba(201,168,76,0.5)", fontSize: "8px" }}>параллельный запуск</span>
+        )}
       </div>
 
       {STRATEGIES.map((s) => {
-        const isSelected = s.id === selectedId;
+        const isEnabled = autoStrategies.includes(s.id);
         const isExpanded = expanded === s.id;
 
         return (
@@ -798,34 +851,39 @@ function AutoTab() {
             key={s.id}
             className="rounded-2xl overflow-hidden"
             style={{
-              border: isSelected ? `1px solid ${s.riskColor}44` : "1px solid rgba(255,255,255,0.07)",
-              background: isSelected ? `${s.riskColor}08` : "rgba(255,255,255,0.02)",
+              border: isEnabled ? `1px solid ${s.riskColor}44` : "1px solid rgba(255,255,255,0.07)",
+              background: isEnabled ? `${s.riskColor}08` : "rgba(255,255,255,0.02)",
               transition: "all 0.2s",
             }}
           >
             {/* Card header */}
             <div className="flex items-center gap-3 px-4 py-3">
-              {/* Select radio */}
+              {/* Checkbox */}
               <button
-                onClick={() => selectStrategy(s.id)}
-                className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center"
+                onClick={() => toggleStrategy(s.id)}
+                className="w-5 h-5 rounded-md shrink-0 flex items-center justify-center"
                 style={{
-                  border: `2px solid ${isSelected ? s.riskColor : "rgba(255,255,255,0.2)"}`,
-                  background: isSelected ? `${s.riskColor}22` : "transparent",
+                  border: `2px solid ${isEnabled ? s.riskColor : "rgba(255,255,255,0.2)"}`,
+                  background: isEnabled ? `${s.riskColor}22` : "transparent",
+                  transition: "all 0.15s",
                 }}
               >
-                {isSelected && <div className="w-2 h-2 rounded-full" style={{ background: s.riskColor }} />}
+                {isEnabled && (
+                  <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                    <path d="M1 3.5L3.5 6L8 1" stroke={s.riskColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
               </button>
 
               {/* Name + tagline */}
               <div className="flex-1 min-w-0">
-                <div style={{ color: isSelected ? s.riskColor : "rgba(255,255,255,0.8)", fontSize: "11px", fontWeight: 700, lineHeight: 1.2 }}>
+                <div style={{ color: isEnabled ? s.riskColor : "rgba(255,255,255,0.8)", fontSize: "11px", fontWeight: 700, lineHeight: 1.2 }}>
                   {s.name}
                 </div>
                 <div style={{ color: "rgba(255,255,255,0.35)", fontSize: "9px", marginTop: "2px" }}>{s.tagline}</div>
               </div>
 
-              {/* Risk badge + stats + expand */}
+              {/* Daily net + expand */}
               <div className="flex items-center gap-2 shrink-0">
                 <div style={{ textAlign: "right" }}>
                   <div style={{ color: s.riskColor, fontSize: "11px", fontWeight: 700, fontFamily: "monospace" }}>{s.dailyNet}</div>
@@ -852,12 +910,12 @@ function AutoTab() {
                 {/* Params grid */}
                 <div className="grid grid-cols-2 gap-2 mt-3">
                   {[
-                    { label: "КАПА",       value: s.mcapRange },
-                    { label: "ЛИКВИДНОСТЬ", value: s.liquidityMin },
+                    { label: "КАПА",           value: s.mcapRange },
+                    { label: "ЛИКВИДНОСТЬ",    value: s.liquidityMin },
                     ...(s.volumeSpike ? [{ label: "VOL SPIKE", value: s.volumeSpike }] : []),
-                    { label: "МАКС. ПОЗИЦИЯ", value: s.maxPct + " баланса" },
-                    { label: "ТРЕЙЛИНГ",  value: s.trailing },
-                    { label: "PRIORITY FEE", value: s.priorityFee },
+                    { label: "МАКС. ПОЗИЦИЯ",  value: s.maxPct + " баланса" },
+                    { label: "ТРЕЙЛИНГ",       value: s.trailing },
+                    { label: "PRIORITY FEE",   value: s.priorityFee },
                   ].map(({ label, value }) => (
                     <div key={label} className="px-3 py-2 rounded-xl"
                       style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
@@ -873,15 +931,19 @@ function AutoTab() {
                   <span style={{ color: s.riskColor, fontSize: "10px", fontWeight: 700 }}>{s.risk}</span>
                 </div>
 
-                {/* Select button if not selected */}
-                {!isSelected && (
-                  <button
-                    onClick={() => selectStrategy(s.id)}
-                    className="w-full mt-3 py-2.5 rounded-xl"
-                    style={{ background: `${s.riskColor}14`, border: `1px solid ${s.riskColor}44`, color: s.riskColor, fontSize: "10px", fontWeight: 700 }}>
-                    Выбрать эту стратегию
-                  </button>
-                )}
+                {/* Toggle button in expanded view */}
+                <button
+                  onClick={() => toggleStrategy(s.id)}
+                  className="w-full mt-3 py-2.5 rounded-xl"
+                  style={{
+                    background: isEnabled ? `${s.riskColor}0A` : `${s.riskColor}14`,
+                    border: `1px solid ${s.riskColor}44`,
+                    color: s.riskColor,
+                    fontSize: "10px",
+                    fontWeight: 700,
+                  }}>
+                  {isEnabled ? "✓ Стратегия активна — убрать" : "Добавить стратегию"}
+                </button>
               </div>
             )}
           </div>

@@ -1,287 +1,433 @@
 /**
- * AutoTrader — реальный фоновый сканер + исполнитель авто-торговли.
+ * AutoTrader — Production 24/7 Auto-Trading Engine
  *
- * Работает только для generated-кошельков (keypair доступен без подписи пользователя).
- * Каждые 60 секунд:
- *  1. Запрашивает trending-токены от DexScreener
- *  2. Фильтрует по параметрам выбранной стратегии (MCAP, ликвидность, volume spike, AI score)
- *  3. Исполняет реальный Jupiter V6 своп
- *  4. Добавляет позицию в контекст с SL/TP для PositionMonitor
- *  5. Отправляет browser notification о покупке
+ * Runs as a background React component (no rendered UI).
+ * Works ONLY for "generated" wallets (keypair available via walletKeystore).
+ *
+ * Each 60-second tick:
+ *  1. Guard checks (autoTrading on, generated wallet, keypair available)
+ *  2. Stop if daily net P&L target is reached
+ *  3. Fetch SOL balance + network congestion (parallel)
+ *  4. Fetch DexScreener scan results (via server-side proxy)
+ *  5. For each enabled strategy — in parallel:
+ *     a. Count active positions attributed to this strategy
+ *     b. Skip if strategy is at max positions
+ *     c. Filter + rank scan results against strategy criteria
+ *     d. For best candidate: run pre-buy net-profit gate (Jupiter quote)
+ *     e. Execute real Jupiter V6 swap
+ *     f. Register position with SL/TP for PositionMonitor to monitor
+ *     g. Update daily stats
+ *
+ * PositionMonitor (separate component) handles:
+ *  - Auto SL/TP/trailing stop execution every 30s
+ *  - DCA and dip-buy execution
+ *
+ * AutoProfitLock: moves SL up as position profits grow (implemented here
+ * in a parallel 30s tick, separate from PositionMonitor's sell logic).
  */
 
-import { useEffect, useRef } from "react";
-import { useTrading } from "@/context/TradingContext";
-import { useOkoWallet } from "@/context/WalletContext";
-import { useBalance } from "@/context/BalanceContext";
-import { getKeypairDirect } from "@/lib/walletKeystore";
-import { executeSwap, fetchSolBalance } from "@/lib/swapExecutor";
-import { fetchTrendingPools } from "@/lib/geckoTerminal";
-import { SOL_MINT } from "@/lib/jupiter";
-import { savePurchase } from "@/lib/portfolioData";
+import { useEffect, useRef, useCallback } from "react";
+import { useTrading }    from "@/context/TradingContext";
+import { useOkoWallet }  from "@/context/WalletContext";
+import { useBalance }    from "@/context/BalanceContext";
+import { getKeypairDirect }  from "@/lib/walletKeystore";
+import { executeSwap }       from "@/lib/swapExecutor";
+import { fetchSolBalance }   from "@/lib/swapExecutor";
+import { savePurchase }      from "@/lib/portfolioData";
+import { SOL_MINT }          from "@/lib/jupiter";
+import {
+  STRATEGIES,
+  fetchScanResults,
+  tokenMatchesStrategy,
+  scoreTokenForStrategy,
+  calcPositionSizeUsd,
+  calcDynamicPriorityFee,
+  checkNetProfitBeforeBuy,
+  fetchNetworkCongestion,
+  computeDailyNetPnlUsd,
+  computeProfitLockSlPrice,
+  type Strategy,
+  type ScanResult,
+} from "@/lib/tradingEngine";
 
-// ── Strategy filter parameters ──────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-interface StrategyFilter {
-  mcapMin:              number;    // minimum market cap USD
-  mcapMax:              number;    // maximum market cap USD
-  liquidityMin:         number;    // minimum liquidity USD
-  needVolumeSpike:      boolean;   // requires volumeSpike flag from DexScreener
-  minChange1hForSpike:  number;    // if needVolumeSpike, 1h change must exceed this %
-  aiScoreMin:           number;    // minimum AI score (0–100)
-  dipRecovery:          boolean;   // look for recovering dip tokens
-  positionPct:          number;    // fraction of SOL balance to spend (0.03 = 3%)
-  trailingPct:          number;    // trailing stop % (0 = disabled)
-  priorityFeeSol:       number;    // SOL to pay as priority fee
+const SCAN_INTERVAL_MS        = 60_000;  // main scan loop
+const PROFIT_LOCK_INTERVAL_MS = 30_000;  // profit lock check
+const MIN_SOL_RESERVE         = 0.05;    // always keep this much SOL for fees
+const COOLDOWN_MS             = 300_000; // 5 min cooldown after buying a token
+const MAX_CIRCUIT_BREAK_ERRS  = 5;       // consecutive errors before pausing scans
+
+// ── Helper: send browser notification (fire-and-forget) ───────────────────────
+
+function notify(title: string, body: string) {
+  try {
+    if (Notification.permission === "granted") {
+      new Notification(title, { body, icon: "/icons/icon-192.png" });
+    }
+  } catch { /* non-critical */ }
 }
 
-const STRATEGY_FILTERS: Record<string, StrategyFilter> = {
-  "ultra-safe":      { mcapMin: 800_000,  mcapMax: 5_000_000, liquidityMin: 120_000, needVolumeSpike: false, minChange1hForSpike: 0,  aiScoreMin: 65, dipRecovery: false, positionPct: 0.20, trailingPct: 10, priorityFeeSol: 0.0001 },
-  "safe-migration":  { mcapMin: 450_000,  mcapMax: 1_800_000, liquidityMin:  55_000, needVolumeSpike: false, minChange1hForSpike: 0,  aiScoreMin: 65, dipRecovery: false, positionPct: 0.15, trailingPct:  8, priorityFeeSol: 0.0001 },
-  "balanced":        { mcapMin: 170_000,  mcapMax:   380_000, liquidityMin:  28_000, needVolumeSpike: true,  minChange1hForSpike: 10, aiScoreMin: 62, dipRecovery: false, positionPct: 0.12, trailingPct:  6, priorityFeeSol: 0.0005 },
-  "early-migration": { mcapMin: 125_000,  mcapMax:   260_000, liquidityMin:  22_000, needVolumeSpike: true,  minChange1hForSpike: 15, aiScoreMin: 62, dipRecovery: false, positionPct: 0.10, trailingPct:  5, priorityFeeSol: 0.001  },
-  "volume-spike":    { mcapMin:  75_000,  mcapMax:   230_000, liquidityMin:  18_000, needVolumeSpike: true,  minChange1hForSpike: 25, aiScoreMin: 60, dipRecovery: false, positionPct: 0.06, trailingPct:  4, priorityFeeSol: 0.002  },
-  "degen":           { mcapMin:  35_000,  mcapMax:   135_000, liquidityMin:  10_000, needVolumeSpike: true,  minChange1hForSpike: 40, aiScoreMin: 55, dipRecovery: false, positionPct: 0.03, trailingPct:  3, priorityFeeSol: 0.005  },
-  "smart-money":     { mcapMin: 150_000,  mcapMax:   600_000, liquidityMin:  30_000, needVolumeSpike: false, minChange1hForSpike: 0,  aiScoreMin: 72, dipRecovery: false, positionPct: 0.08, trailingPct:  0, priorityFeeSol: 0.002  },
-  "hype":            { mcapMin:  80_000,  mcapMax:   350_000, liquidityMin:  10_000, needVolumeSpike: false, minChange1hForSpike: 0,  aiScoreMin: 62, dipRecovery: false, positionPct: 0.07, trailingPct:  0, priorityFeeSol: 0.002  },
-  "dip-recovery":    { mcapMin: 120_000,  mcapMax:   450_000, liquidityMin:  10_000, needVolumeSpike: false, minChange1hForSpike: 0,  aiScoreMin: 55, dipRecovery: true,  positionPct: 0.09, trailingPct:  0, priorityFeeSol: 0.002  },
-};
-
-const SCAN_INTERVAL_MS   = 60_000;   // scan every 60 seconds
-const COOLDOWN_MS        = 300_000;  // 5 min cooldown per token after buy
-const MIN_SOL_RESERVE    = 0.05;     // keep at least 0.05 SOL for fees
+// ── Main Component ────────────────────────────────────────────────────────────
 
 export default function AutoTrader() {
   const {
     autoTrading,
+    autoStrategies,
     riskSettings,
     sltpSettings,
+    dailyTargetUsd,
     positions,
+    tradeHistory,
     addPosition,
     addTrade,
+    updatePositionSlPrice,
   } = useTrading();
 
   const { address, walletType } = useOkoWallet();
   const { solPrice, refresh: refreshBalance } = useBalance();
 
-  // Refs so interval callback always sees current values
-  const solPriceRef   = useRef(solPrice);
-  const posRef        = useRef(positions);
-  const sltpRef       = useRef(sltpSettings);
-  const riskRef       = useRef(riskSettings);
-  const autoRef       = useRef(autoTrading);
+  // ── Stable refs so interval callbacks always see current values ────────────
+  const autoTradingRef    = useRef(autoTrading);
+  const autoStrategiesRef = useRef(autoStrategies);
+  const posRef            = useRef(positions);
+  const tradeHistRef      = useRef(tradeHistory);
+  const solPriceRef       = useRef(solPrice);
+  const sltpRef           = useRef(sltpSettings);
+  const riskRef           = useRef(riskSettings);
+  const dailyTargetRef    = useRef(dailyTargetUsd);
+  const addrRef           = useRef(address);
+  const walletTypeRef     = useRef(walletType);
 
-  solPriceRef.current = solPrice;
-  posRef.current      = positions;
-  sltpRef.current     = sltpSettings;
-  riskRef.current     = riskSettings;
-  autoRef.current     = autoTrading;
+  autoTradingRef.current    = autoTrading;
+  autoStrategiesRef.current = autoStrategies;
+  posRef.current            = positions;
+  tradeHistRef.current      = tradeHistory;
+  solPriceRef.current       = solPrice;
+  sltpRef.current           = sltpSettings;
+  riskRef.current           = riskSettings;
+  dailyTargetRef.current    = dailyTargetUsd;
+  addrRef.current           = address;
+  walletTypeRef.current     = walletType;
 
-  const inFlight   = useRef<Set<string>>(new Set());
-  const recentBuys = useRef<Map<string, number>>(new Map()); // mint → timestamp
+  // ── State for circuit-breaker and cooldowns ────────────────────────────────
+  const consecutiveErrors = useRef(0);
+  const inFlight          = useRef<Set<string>>(new Set());          // mints being bought
+  const cooldowns         = useRef<Map<string, number>>(new Map());  // mint → last buy ts
+  const stratPositions    = useRef<Map<string, Set<string>>>(new Map()); // stratId → Set<mint>
 
+  // ── Sync stratPositions from positions state ───────────────────────────────
+  useEffect(() => {
+    const map = new Map<string, Set<string>>();
+    for (const p of positions) {
+      const sid = (p as any).strategyId as string | undefined;
+      if (!sid) continue;
+      if (!map.has(sid)) map.set(sid, new Set());
+      map.get(sid)!.add(p.mint);
+    }
+    stratPositions.current = map;
+  }, [positions]);
+
+  // ── Execute one strategy against a set of candidates ───────────────────────
+  const executeStrategy = useCallback(async (
+    strategy: Strategy,
+    candidates: ScanResult[],
+    solBal: number,
+    congestion: number,
+    addr: string,
+  ) => {
+    const solUsd      = solPriceRef.current > 0 ? solPriceRef.current : 150;
+    const activeMints = stratPositions.current.get(strategy.id) ?? new Set<string>();
+
+    if (activeMints.size >= strategy.maxPositions) {
+      console.log(`[AutoTrader] ${strategy.id}: макс. позиций (${activeMints.size}/${strategy.maxPositions})`);
+      return;
+    }
+
+    // Filter candidates for this strategy
+    const now   = Date.now();
+    const valid = candidates.filter((t) => {
+      if (!t.mint || inFlight.current.has(t.mint)) return false;
+      // Already in any open position
+      if (posRef.current.some((p) => p.mint === t.mint)) return false;
+      // Cooldown
+      const lastBuy = cooldowns.current.get(t.mint);
+      if (lastBuy && now - lastBuy < COOLDOWN_MS) return false;
+      // Strategy filter
+      return tokenMatchesStrategy(t, strategy);
+    });
+
+    if (valid.length === 0) return;
+
+    // Pick highest-scoring candidate
+    const best = valid
+      .map((t) => ({ t, score: scoreTokenForStrategy(t, strategy) }))
+      .sort((a, b) => b.score - a.score)[0].t;
+
+    const enabledCount = autoStrategiesRef.current.length || 1;
+    const usdAmount    = calcPositionSizeUsd(strategy, solBal, solUsd, enabledCount);
+    const minAmount    = 2; // $2 minimum
+    if (usdAmount < minAmount) {
+      console.log(`[AutoTrader] ${strategy.id}: позиция слишком мала ($${usdAmount.toFixed(2)})`);
+      return;
+    }
+
+    const priorityFeeSol = calcDynamicPriorityFee(strategy, congestion);
+
+    // ── Pre-buy net profit gate ───────────────────────────────────────────────
+    const gate = await checkNetProfitBeforeBuy({
+      inputMint:      SOL_MINT,
+      outputMint:     best.mint,
+      inputAmountUsd: usdAmount,
+      solPriceUsd:    solUsd,
+      strategy,
+      priorityFeeSol,
+    });
+
+    if (!gate.ok) {
+      console.log(`[AutoTrader] ${strategy.id}: ❌ Net-profit gate: ${gate.reason}`);
+      return;
+    }
+
+    // ── Risk manager check ────────────────────────────────────────────────────
+    const riskCheck = riskRef.current;
+    if (posRef.current.length >= riskCheck.maxOpenPositions) {
+      console.log(`[AutoTrader] Глобальный лимит позиций (${posRef.current.length})`);
+      return;
+    }
+
+    // ── Execute real Jupiter swap ─────────────────────────────────────────────
+    inFlight.current.add(best.mint);
+
+    console.log(
+      `[AutoTrader] 🎯 ${strategy.emoji} ${strategy.id} → покупаю ${best.symbol}` +
+      ` $${usdAmount.toFixed(2)} | MCAP $${(best.marketCap / 1000).toFixed(0)}k` +
+      ` | Score ${best.aiScore} | Impact ${gate.priceImpactPct.toFixed(2)}%` +
+      ` | fee ${priorityFeeSol.toFixed(5)} SOL`,
+    );
+
+    try {
+      const keypair = getKeypairDirect(addr);
+      if (!keypair) throw new Error("Keypair не найден");
+
+      const result = await executeSwap({
+        userAddress:    addr,
+        keypair,
+        inputMint:      SOL_MINT,
+        outputMint:     best.mint,
+        inputAmountUsd: usdAmount,
+        solPriceUsd:    solUsd,
+        slippageBps:    strategy.slippageBps,
+        priorityFeeSol,
+      });
+
+      const price    = result.entryPrice;
+      const tokenQty = result.outAmountUi;
+      const posNow   = Date.now();
+
+      // Compute SL/TP from strategy + global sltpSettings
+      const slPct        = Math.max(strategy.slPct, sltpRef.current.slPct);
+      const tpPct        = strategy.tpPct;
+      const trailingPct  = strategy.trailingPct > 0 ? strategy.trailingPct
+                         : sltpRef.current.trailingPct > 0 ? sltpRef.current.trailingPct
+                         : undefined;
+
+      const slPrice = price * (1 - slPct / 100);
+      const tpPrice = price * (1 + tpPct / 100);
+
+      // Register position — PositionMonitor will auto-execute SL/TP
+      addPosition({
+        symbol:        best.symbol,
+        mint:          best.mint,
+        logoURI:       best.imageUrl,
+        entryPrice:    price,
+        currentPrice:  price,
+        amount:        tokenQty,
+        usdValue:      usdAmount,
+        costBasisUsd:  usdAmount,
+        openedAt:      posNow,
+        slPrice,
+        tpPrice,
+        trailingPct,
+        highWaterMark: price,
+        // Strategy tag (custom field stored on Position)
+        ...(({ strategyId: strategy.id } as any)),
+      });
+
+      // Record trade
+      addTrade({
+        timestamp: posNow,
+        symbol:    best.symbol,
+        mint:      best.mint,
+        side:      "BUY",
+        amount:    tokenQty,
+        price,
+        usdValue:  result.inputAmountUsd,
+        fee:       result.fee,
+        txHash:    result.txHash,
+      });
+
+      // Persist cost basis for Portfolio page
+      savePurchase(best.mint, best.symbol, usdAmount);
+
+      // Track cooldown
+      cooldowns.current.set(best.mint, posNow);
+
+      // Refresh wallet balance in UI
+      refreshBalance();
+
+      notify(
+        `🤖 ${strategy.emoji} Куплено ${best.symbol}`,
+        `$${usdAmount.toFixed(2)} · ${strategy.name} · Score ${best.aiScore}` +
+        ` · ${result.txHash.slice(0, 8)}…`,
+      );
+
+      console.log(
+        `[AutoTrader] ✅ ${strategy.id} bought ${best.symbol}:` +
+        ` tx=${result.txHash} price=$${price.toExponential(3)}` +
+        ` qty=${tokenQty.toFixed(4)}`,
+      );
+
+      consecutiveErrors.current = 0; // reset circuit breaker on success
+    } catch (err: any) {
+      consecutiveErrors.current++;
+      console.error(`[AutoTrader] ❌ ${strategy.id} buy ${best.symbol} failed:`, err?.message ?? err);
+    } finally {
+      inFlight.current.delete(best.mint);
+    }
+  }, [addPosition, addTrade, refreshBalance]);
+
+  // ── Main scan tick ────────────────────────────────────────────────────────
+  const scanTick = useCallback(async () => {
+    if (!autoTradingRef.current) return;
+
+    const addr   = addrRef.current;
+    const wType  = walletTypeRef.current;
+    if (!addr || wType !== "generated") return;
+
+    // Circuit breaker: pause if too many consecutive errors
+    if (consecutiveErrors.current >= MAX_CIRCUIT_BREAK_ERRS) {
+      console.warn(`[AutoTrader] ⛔ Circuit breaker: ${consecutiveErrors.current} ошибок подряд. Жду 5 минут.`);
+      setTimeout(() => { consecutiveErrors.current = 0; }, 300_000);
+      return;
+    }
+
+    // Quick keypair check before any async work
+    const keypair = getKeypairDirect(addr);
+    if (!keypair) {
+      console.log("[AutoTrader] Keypair не найден — нужна разблокировка кошелька");
+      return;
+    }
+
+    const enabledStrategies = autoStrategiesRef.current
+      .map((id) => STRATEGIES.find((s) => s.id === id))
+      .filter(Boolean) as Strategy[];
+
+    if (enabledStrategies.length === 0) {
+      console.log("[AutoTrader] Нет активных стратегий");
+      return;
+    }
+
+    // ── Daily net target check ─────────────────────────────────────────────
+    const dailyNet    = computeDailyNetPnlUsd(tradeHistRef.current);
+    const dailyTarget = dailyTargetRef.current;
+    if (dailyTarget > 0 && dailyNet >= dailyTarget) {
+      console.log(`[AutoTrader] 🎯 Дневной таргет достигнут! Net P&L $${dailyNet.toFixed(2)} ≥ $${dailyTarget}. Покупки остановлены.`);
+      return;
+    }
+
+    // ── Parallel: SOL balance + network congestion ─────────────────────────
+    let solBal: number, congestion: number;
+    try {
+      [solBal, congestion] = await Promise.all([
+        fetchSolBalance(addr),
+        fetchNetworkCongestion(),
+      ]);
+    } catch (e: any) {
+      console.warn("[AutoTrader] Не удалось получить баланс или конгестию:", e.message);
+      consecutiveErrors.current++;
+      return;
+    }
+
+    const spendableSol = solBal - MIN_SOL_RESERVE;
+    if (spendableSol <= 0) {
+      console.log(`[AutoTrader] Баланс SOL слишком низкий: ${solBal.toFixed(4)} SOL`);
+      return;
+    }
+
+    // ── Fetch scan results ─────────────────────────────────────────────────
+    let scanResults: ScanResult[];
+    try {
+      // Fetch boosted + latest in parallel, merge and deduplicate
+      const [boosted, latest] = await Promise.allSettled([
+        fetchScanResults("boosted"),
+        fetchScanResults("latest"),
+      ]);
+
+      const merged = new Map<string, ScanResult>();
+      const addAll = (arr: ScanResult[]) => arr.forEach((r) => { if (!merged.has(r.mint)) merged.set(r.mint, r); });
+
+      if (boosted.status === "fulfilled") addAll(boosted.value);
+      if (latest.status  === "fulfilled") addAll(latest.value);
+
+      scanResults = [...merged.values()];
+      console.log(`[AutoTrader] 📊 Скан: ${scanResults.length} токенов (congestion ${(congestion * 100).toFixed(0)}%)`);
+    } catch (e: any) {
+      console.warn("[AutoTrader] DexScreener scan failed:", e.message);
+      consecutiveErrors.current++;
+      return;
+    }
+
+    if (scanResults.length === 0) return;
+
+    // ── Run all enabled strategies in parallel ─────────────────────────────
+    // Each strategy independently finds its best candidate and executes
+    await Promise.allSettled(
+      enabledStrategies.map((strategy) =>
+        executeStrategy(strategy, scanResults, spendableSol, congestion, addr),
+      ),
+    );
+  }, [executeStrategy]);
+
+  // ── Profit Lock tick (30s) ─────────────────────────────────────────────────
+  const profitLockTick = useCallback(() => {
+    if (!autoTradingRef.current) return;
+    const positions = posRef.current;
+
+    for (const pos of positions) {
+      if (!pos.currentPrice || !pos.entryPrice) continue;
+      const newSl = computeProfitLockSlPrice(pos.entryPrice, pos.currentPrice, pos.slPrice);
+      if (newSl !== null) {
+        console.log(`[AutoTrader] 🔒 Profit Lock ${pos.symbol}: SL ${pos.slPrice?.toFixed(6) ?? "none"} → ${newSl.toFixed(6)}`);
+        updatePositionSlPrice?.(pos.id, newSl);
+      }
+    }
+  }, [updatePositionSlPrice]);
+
+  // ── Request notification permission on first enable ────────────────────────
+  useEffect(() => {
+    if (autoTrading && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, [autoTrading]);
+
+  // ── Main scan loop ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!autoTrading) return;
 
-    const scan = async () => {
-      // Safety re-check (closure over ref so it's always current)
-      if (!autoRef.current) return;
+    // Run immediately on enable, then on interval
+    scanTick();
+    const scanId = setInterval(scanTick, SCAN_INTERVAL_MS);
 
-      const addr  = address;
-      const wType = walletType;
-      if (!addr || wType !== "generated") {
-        console.log("[AutoTrader] Пропуск: нет generated-кошелька");
-        return;
-      }
+    // Profit lock on a faster tick
+    profitLockTick();
+    const lockId = setInterval(profitLockTick, PROFIT_LOCK_INTERVAL_MS);
 
-      const keypair = getKeypairDirect(addr);
-      if (!keypair) {
-        console.log("[AutoTrader] Пропуск: ключ кошелька не найден (нужна разблокировка)");
-        return;
-      }
-
-      const strategyId = localStorage.getItem("oko-auto-strategy") ?? "early-migration";
-      const filter     = STRATEGY_FILTERS[strategyId];
-      if (!filter) return;
-
-      // Check max open positions
-      if (posRef.current.length >= riskRef.current.maxOpenPositions) {
-        console.log(`[AutoTrader] Достигнут лимит позиций (${posRef.current.length})`);
-        return;
-      }
-
-      // Fetch real SOL balance (fresh, not from cached context)
-      const solBal = await fetchSolBalance(addr);
-      if (solBal <= MIN_SOL_RESERVE) {
-        console.log(`[AutoTrader] Баланс SOL слишком низкий: ${solBal.toFixed(4)} SOL`);
-        return;
-      }
-
-      const solUsd = solPriceRef.current > 0 ? solPriceRef.current : 150;
-
-      // Fetch DexScreener trending tokens
-      let signals;
-      try {
-        signals = await fetchTrendingPools("solana");
-      } catch (e) {
-        console.warn("[AutoTrader] DexScreener недоступен:", e);
-        return;
-      }
-
-      const now = Date.now();
-
-      // Apply strategy filters
-      const candidates = signals.filter((s) => {
-        const mint = s.baseToken.id;
-        if (!mint) return false;
-
-        // Skip if already in portfolio
-        if (posRef.current.some((p) => p.mint === mint)) return false;
-
-        // Skip if in cooldown window
-        const lastBuy = recentBuys.current.get(mint);
-        if (lastBuy && now - lastBuy < COOLDOWN_MS) return false;
-
-        // Skip if in flight
-        if (inFlight.current.has(mint)) return false;
-
-        // MCAP range
-        const mcap = s.marketCap ?? 0;
-        if (mcap < filter.mcapMin || mcap > filter.mcapMax) return false;
-
-        // Liquidity minimum
-        if (s.liquidity < filter.liquidityMin) return false;
-
-        // Volume spike requirement
-        if (filter.needVolumeSpike) {
-          if (!s.volumeSpike) return false;
-          // Use 1h price change as proxy for spike magnitude
-          if (s.change1h < filter.minChange1hForSpike) return false;
-        }
-
-        // AI signal + score
-        if (s.aiSignal !== "BUY") return false;
-        if (s.aiScore < filter.aiScoreMin) return false;
-
-        // Dip recovery: dropped 25%+ in 24h but recovering (positive 1h)
-        if (filter.dipRecovery) {
-          if (s.change24h > -25) return false;
-          if (s.change1h <= 0)   return false;
-        }
-
-        return true;
-      });
-
-      if (candidates.length === 0) {
-        console.log(`[AutoTrader] Нет кандидатов для стратегии "${strategyId}"`);
-        return;
-      }
-
-      // Pick best candidate by AI score
-      const best = [...candidates].sort((a, b) => b.aiScore - a.aiScore)[0];
-      const mint   = best.baseToken.id;
-      const symbol = best.baseToken.symbol;
-
-      // Calculate position size (fraction of total SOL balance, keep reserve)
-      const tradableSOL = Math.max(0, solBal - MIN_SOL_RESERVE);
-      const usdAmount   = Math.round(tradableSOL * solUsd * filter.positionPct * 100) / 100;
-      const minAmount   = 2; // minimum $2 per trade
-      if (usdAmount < minAmount) {
-        console.log(`[AutoTrader] Позиция слишком мала: $${usdAmount.toFixed(2)}`);
-        return;
-      }
-
-      // Risk manager: enforce daily loss limit (simplified)
-      // TODO: integrate with full daily loss tracking
-
-      inFlight.current.add(mint);
-      console.log(`[AutoTrader] 🎯 "${strategyId}" → покупаю ${symbol} $${usdAmount.toFixed(2)} (MCAP $${(best.marketCap ?? 0 / 1000).toFixed(0)}k, Score ${best.aiScore})`);
-
-      try {
-        const result = await executeSwap({
-          userAddress:    addr,
-          keypair,
-          inputMint:      SOL_MINT,
-          outputMint:     mint,
-          inputAmountUsd: usdAmount,
-          solPriceUsd:    solUsd,
-          slippageBps:    150,
-          priorityFeeSol: filter.priorityFeeSol,
-        });
-
-        const price    = result.entryPrice;
-        const tokenQty = result.outAmountUi;
-
-        // Compute SL/TP prices from settings
-        const slPrice     = sltpRef.current.slPct > 0
-          ? price * (1 - sltpRef.current.slPct / 100)
-          : undefined;
-        const tpPrice     = sltpRef.current.tpPct > 0
-          ? price * (1 + sltpRef.current.tpPct / 100)
-          : undefined;
-        const trailingPct = filter.trailingPct > 0 ? filter.trailingPct : (sltpRef.current.trailingPct > 0 ? sltpRef.current.trailingPct : undefined);
-
-        // Add position (PositionMonitor will auto-execute SL/TP)
-        addPosition({
-          symbol,
-          mint,
-          entryPrice:    price,
-          currentPrice:  price,
-          amount:        tokenQty,
-          usdValue:      usdAmount,
-          costBasisUsd:  usdAmount,
-          openedAt:      now,
-          slPrice,
-          tpPrice,
-          trailingPct,
-          highWaterMark: price,
-        });
-
-        // Record trade in history
-        addTrade({
-          timestamp: now,
-          symbol,
-          mint,
-          side:      "BUY",
-          amount:    tokenQty,
-          price,
-          usdValue:  usdAmount,
-          fee:       result.fee,
-          txHash:    result.txHash,
-        });
-
-        // Persist cost basis for Portfolio page
-        savePurchase(mint, symbol, usdAmount);
-
-        // Mark cooldown
-        recentBuys.current.set(mint, now);
-
-        // Refresh balance in UI
-        refreshBalance();
-
-        // Browser notification
-        try {
-          if (Notification.permission === "granted") {
-            new Notification(`🤖 AutoBot купил ${symbol}`, {
-              body: `$${usdAmount.toFixed(2)} · ${strategyId} · Score ${best.aiScore} · ${result.txHash.slice(0, 10)}…`,
-              icon: "/icons/icon-192.png",
-            });
-          }
-        } catch { /* non-critical */ }
-
-        console.log(`[AutoTrader] ✅ Куплено ${symbol}: txHash=${result.txHash} price=$${price.toExponential(3)} qty=${tokenQty.toFixed(4)}`);
-      } catch (err: any) {
-        console.error(`[AutoTrader] ❌ Ошибка покупки ${symbol}:`, err?.message ?? err);
-      } finally {
-        inFlight.current.delete(mint);
-      }
+    return () => {
+      clearInterval(scanId);
+      clearInterval(lockId);
     };
-
-    // Run immediately on activation, then on interval
-    scan();
-    const id = setInterval(scan, SCAN_INTERVAL_MS);
-    return () => clearInterval(id);
-    // Re-run effect when wallet / autoTrading changes
+    // Re-run when wallet or autoTrading changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoTrading, address, walletType]);
 

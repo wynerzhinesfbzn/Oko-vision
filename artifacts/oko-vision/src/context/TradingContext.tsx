@@ -25,6 +25,7 @@ export interface Position {
   dipBought?: boolean;    // set to true once dip buy has been executed
   slOrderKey?: string;
   tpOrderKey?: string;
+  strategyId?: string;    // which auto-trading strategy opened this position
 }
 
 // ── Conditional Sell Order ─────────────────────────────────────────────────────
@@ -110,6 +111,14 @@ export interface TradingState {
   autoTrading: boolean;
   setAutoTrading: (v: boolean) => void;
 
+  // Multi-strategy support
+  autoStrategies: string[];
+  setAutoStrategies: (ids: string[]) => void;
+
+  // Daily P&L target (stop buying new positions when reached)
+  dailyTargetUsd: number;
+  setDailyTargetUsd: (v: number) => void;
+
   sltpSettings: SLTPSettings;
   setSLTPSettings: (s: SLTPSettings) => void;
 
@@ -122,6 +131,8 @@ export interface TradingState {
   clearAllPositions: () => void;
   updatePositionPrice: (mint: string, currentPrice: number) => void;
   setPositionHighWater: (mint: string, price: number) => void;
+  /** Move SL up for profit lock (only moves upward, never down) */
+  updatePositionSlPrice: (positionId: string, newSlPrice: number) => void;
   totalUsd: number;
   totalPnlUsd: number;
   totalPnlPct: number;
@@ -178,15 +189,21 @@ async function fetchJupiterPrice(mint: string): Promise<number | null> {
 }
 
 export function TradingProvider({ children }: { children: ReactNode }) {
-  const [autoTrading,        setAutoTradingState]   = useState(false);
-  const [sltpSettings,       setSLTPState]          = useState<SLTPSettings>(DEFAULT_SLTP);
-  const [riskSettings,       setRiskState]          = useState<RiskSettings>(DEFAULT_RISK);
-  const [positions,          setPositions]          = useState<Position[]>([]);
-  const [tradeHistory,       setTradeHistory]       = useState<TradeRecord[]>([]);
-  const [portfolioHistory,   setPortfolioHistory]   = useState<PortfolioSnapshot[]>([]);
-  const [copyTraders,        setCopyTraders]        = useState<CopyTrader[]>([]);
-  const [dcaOrders,          setDcaOrders]          = useState<DCAOrder[]>([]);
-  const [conditionalOrders,  setConditionalOrders]  = useState<ConditionalOrder[]>([]);
+  const [autoTrading,        setAutoTradingState]      = useState(false);
+  const [autoStrategies,     setAutoStrategiesState]   = useState<string[]>(() => {
+    // Migrate from single-strategy localStorage key
+    const legacy = localStorage.getItem("oko-auto-strategy");
+    return legacy ? [legacy] : ["early-migration"];
+  });
+  const [dailyTargetUsd,     setDailyTargetUsdState]   = useState<number>(0);
+  const [sltpSettings,       setSLTPState]             = useState<SLTPSettings>(DEFAULT_SLTP);
+  const [riskSettings,       setRiskState]             = useState<RiskSettings>(DEFAULT_RISK);
+  const [positions,          setPositions]             = useState<Position[]>([]);
+  const [tradeHistory,       setTradeHistory]          = useState<TradeRecord[]>([]);
+  const [portfolioHistory,   setPortfolioHistory]      = useState<PortfolioSnapshot[]>([]);
+  const [copyTraders,        setCopyTraders]           = useState<CopyTrader[]>([]);
+  const [dcaOrders,          setDcaOrders]             = useState<DCAOrder[]>([]);
+  const [conditionalOrders,  setConditionalOrders]     = useState<ConditionalOrder[]>([]);
 
   const positionsRef = useRef(positions);
   positionsRef.current = positions;
@@ -202,6 +219,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       if (stored) {
         const d = JSON.parse(stored);
         if (d.autoTrading       !== undefined) setAutoTradingState(d.autoTrading);
+        if (d.autoStrategies)                setAutoStrategiesState(d.autoStrategies);
+        if (d.dailyTargetUsd  !== undefined) setDailyTargetUsdState(d.dailyTargetUsd);
         if (d.sltpSettings)                  setSLTPState(d.sltpSettings);
         if (d.riskSettings)                  setRiskState(d.riskSettings);
         if (d.tradeHistory)                  setTradeHistory(d.tradeHistory);
@@ -218,7 +237,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       localStorage.setItem("oko-trading", JSON.stringify({
-        autoTrading, sltpSettings, riskSettings,
+        autoTrading, autoStrategies, dailyTargetUsd,
+        sltpSettings, riskSettings,
         tradeHistory: tradeHistory.slice(0, 100),
         copyTraders, dcaOrders,
         positions,
@@ -226,7 +246,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         conditionalOrders: conditionalOrders.slice(0, 50),
       }));
     } catch {}
-  }, [autoTrading, sltpSettings, riskSettings, tradeHistory, copyTraders, dcaOrders, positions, portfolioHistory, conditionalOrders]);
+  }, [autoTrading, autoStrategies, dailyTargetUsd, sltpSettings, riskSettings, tradeHistory, copyTraders, dcaOrders, positions, portfolioHistory, conditionalOrders]);
 
   // DCA execution is handled by PositionMonitor (real swaps for generated wallets)
 
@@ -364,9 +384,23 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return { allowed: true };
   }, [totalUsd, riskSettings, positions.length, tradeHistory]);
 
-  const setAutoTrading  = useCallback((v: boolean) => setAutoTradingState(v), []);
-  const setSLTPSettings = useCallback((s: SLTPSettings) => setSLTPState(s), []);
-  const setRiskSettings = useCallback((s: RiskSettings) => setRiskState(s), []);
+  const setAutoTrading      = useCallback((v: boolean)    => setAutoTradingState(v),    []);
+  const setAutoStrategies   = useCallback((ids: string[]) => setAutoStrategiesState(ids), []);
+  const setDailyTargetUsd   = useCallback((v: number)     => setDailyTargetUsdState(v), []);
+  const setSLTPSettings     = useCallback((s: SLTPSettings) => setSLTPState(s), []);
+  const setRiskSettings     = useCallback((s: RiskSettings) => setRiskState(s), []);
+
+  /** Raise SL for profit lock — never moves SL downward */
+  const updatePositionSlPrice = useCallback((positionId: string, newSlPrice: number) => {
+    setPositions((prev) =>
+      prev.map((p) => {
+        if (p.id !== positionId) return p;
+        // Only move SL upward — never decrease it
+        if (p.slPrice !== undefined && newSlPrice <= p.slPrice) return p;
+        return { ...p, slPrice: newSlPrice };
+      }),
+    );
+  }, []);
 
   const toggleCopyTrader = useCallback((id: string) => {
     setCopyTraders((prev) => prev.map((t) => t.id === id ? { ...t, isCopying: !t.isCopying } : t));
@@ -417,9 +451,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   return (
     <TradingCtx.Provider value={{
       autoTrading, setAutoTrading,
+      autoStrategies, setAutoStrategies,
+      dailyTargetUsd, setDailyTargetUsd,
       sltpSettings, setSLTPSettings,
       riskSettings, setRiskSettings,
-      positions, addPosition, removePosition, clearAllPositions, updatePositionPrice, setPositionHighWater,
+      positions, addPosition, removePosition, clearAllPositions,
+      updatePositionPrice, setPositionHighWater, updatePositionSlPrice,
       totalUsd, totalPnlUsd, totalPnlPct,
       portfolioHistory,
       tradeHistory, addTrade,

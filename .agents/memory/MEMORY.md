@@ -1,0 +1,2 @@
+- [AutoTrader architecture](autotrader-arch.md) — profit-lock lives only in AutoTrader (not PositionMonitor); both components use getKeypairDirect for keyless access.
+- [TradingContext auto-strategies](trading-context-multi-strategy.md) — multi-strategy support: autoStrategies (string[]), dailyTargetUsd, updatePositionSlPrice added; localStorage key "oko-trading" persists them.
