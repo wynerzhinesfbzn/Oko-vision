@@ -154,28 +154,38 @@ router.get("/scan", async (req, res): Promise<void> => {
       }
     }
 
-    // ── TYPE: latest ───────────────────────────────────────────────────────────
+    // ── TYPE: latest — token-profiles feed (recently created tokens) ──────────
     else if (type === "latest") {
-      // DexScreener /latest/dex/pairs/{chainId} — returns recently active pairs
-      const r = await fetch(`${DEX_BASE}/latest/dex/pairs/${chain}`, {
+      // token-profiles/latest/v1 returns newest tokens on DexScreener
+      const r = await fetch(`${DEX_BASE}/token-profiles/latest/v1`, {
         headers: { "Accept": "application/json" },
         signal: AbortSignal.timeout(12_000),
       });
-      if (!r.ok) throw new Error(`DexScreener latest HTTP ${r.status}`);
-      const json = (await r.json()) as any;
-      const rawPairs: any[] = json.pairs ?? [];
-      pairs = rawPairs
-        .map((p) => parsePair(p, chain))
-        .filter(Boolean) as PairData[];
-      pairs = deduplicateByMint(pairs);
+      if (!r.ok) throw new Error(`DexScreener token-profiles HTTP ${r.status}`);
+      const profiles = (await r.json()) as any[];
+      const chainProfiles = profiles.filter((p) => p.chainId === chain).slice(0, 30);
+      if (chainProfiles.length > 0) {
+        const addresses = chainProfiles.map((p) => p.tokenAddress).join(",");
+        const pairsRes = await fetch(`${DEX_BASE}/latest/dex/tokens/${addresses}`, {
+          headers: { "Accept": "application/json" },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!pairsRes.ok) throw new Error(`DexScreener token pairs HTTP ${pairsRes.status}`);
+        const pairsJson = (await pairsRes.json()) as any;
+        const rawPairs: any[] = pairsJson.pairs ?? [];
+        pairs = rawPairs
+          .filter((p) => p.chainId === chain)
+          .map((p) => parsePair(p, chain))
+          .filter(Boolean) as PairData[];
+        pairs = deduplicateByMint(pairs);
+      }
     }
 
-    // ── TYPE: trending (search-based — uses DexScreener /search) ──────────────
+    // ── TYPE: trending — multi-search merge ────────────────────────────────────
     else if (type === "trending") {
-      // Fetch trending tokens via multiple search terms and merge
-      const terms = ["pump", "sol", "meme", "ai", "doge"];
+      const terms = ["pump", "meme", "ai", "cat", "dog", "sol"];
       const allPairs: any[] = [];
-      for (const term of terms.slice(0, 2)) { // limit to 2 to avoid rate limits
+      await Promise.all(terms.map(async (term) => {
         try {
           const r = await fetch(`${DEX_BASE}/latest/dex/search?q=${term}`, {
             headers: { "Accept": "application/json" },
@@ -186,7 +196,7 @@ router.get("/scan", async (req, res): Promise<void> => {
             allPairs.push(...(j.pairs ?? []).filter((p: any) => p.chainId === chain));
           }
         } catch { /* skip on error */ }
-      }
+      }));
       pairs = allPairs
         .map((p) => parsePair(p, chain))
         .filter(Boolean) as PairData[];

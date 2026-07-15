@@ -102,6 +102,11 @@ function SlideMenu({ open, onClose, onNav, location }: SlideMenuProps) {
       badge: "LIVE", badgeColor: "#C9A84C",
     },
     {
+      label: "Сигналы по стратегиям", sublabel: "9 стратегий · DexScreener",
+      path: "/signals", icon: <Zap size={18} />,
+      badge: "NEW", badgeColor: "#a78bfa",
+    },
+    {
       label: "Портфель", sublabel: "Позиции и P&L",
       path: "/portfolio", icon: <Grid3X3 size={18} />,
     },

@@ -16,6 +16,7 @@ import Home from "@/pages/Home";
 const WalletSelect      = lazy(() => import("@/pages/WalletSelect"));
 const WalletDashboard   = lazy(() => import("@/pages/WalletDashboard"));
 const Markets           = lazy(() => import("@/pages/Markets"));
+const Signals           = lazy(() => import("@/pages/Signals"));
 const Portfolio         = lazy(() => import("@/pages/Portfolio"));
 const Trading           = lazy(() => import("@/pages/Trading"));
 const Leaderboard       = lazy(() => import("@/pages/Leaderboard"));
@@ -59,6 +60,7 @@ function Router() {
         <Route path="/backtesting"  component={Backtesting} />
         <Route path="/multichain"   component={MultiChainWallet} />
         <Route path="/robinhood"    component={RobinhoodWallet} />
+        <Route path="/signals"      component={Signals} />
         <Route component={NotFound} />
       </Switch>
     </Suspense>
