@@ -80,7 +80,8 @@ function computeScore(t: Pick<ScanResult, "change5m"|"change1h"|"change24h"|"vol
   if (c5 > 2) score += 8; else if (c5 < -2) score -= 8;
   if      (spike > 5) score += 18; else if (spike > 3) score += 12; else if (spike > 2) score += 6;
   score = Math.max(0, Math.min(100, score));
-  const signal: "BUY"|"SELL"|"HOLD" = score >= 62 ? "BUY" : score <= 38 ? "SELL" : "HOLD";
+  // Threshold 55 (not 62) — allows moderate momentum tokens through requireBuyAiSignal
+  const signal: "BUY"|"SELL"|"HOLD" = score >= 55 ? "BUY" : score <= 38 ? "SELL" : "HOLD";
   return { score, signal };
 }
 
@@ -95,16 +96,28 @@ type Network = "solana" | "robinhood";
  * by tokenMatchesStrategy().
  *
  * NOTE: profile=0 avoids Cloudflare bot detection on some chains (e.g. Robinhood).
+ * Robinhood uses ONE shared URL (no min filters) — all 80 tokens fetched once,
+ * then filtered per-strategy client-side by tokenMatchesStrategy().
  */
+
+// Two-tier Solana screener pools + one Robinhood pool.
+// Browser mutex on the server serializes launches — max 3 unique URLs = max 3 launches.
+// Strategies are mapped to the pool whose mcap range best covers them:
+//   LARGE (minMcap=150K): ultra-safe, safe-migration, balanced, smart-money
+//   SMALL (minMcap=20K):  early-migration, volume-spike, degen, hype, dip-recovery
+const SOL_LARGE_URL =
+  `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap&minLiq=10000&minMarketCap=150000&profile=0`;
+const SOL_SMALL_URL =
+  `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap&minLiq=5000&minMarketCap=20000&profile=0`;
+const RH_SCREENER_URL =
+  `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=robinhood&profile=0`;
+
+// Strategy IDs that belong to the large-cap pool
+const LARGE_CAP_STRATEGIES = new Set(["ultra-safe", "safe-migration", "balanced", "smart-money"]);
+
 function getScreenerUrl(strategy: Strategy, network: Network): string {
-  const dexPart = network === "solana" ? "&dexIds=pumpswap" : ""; // Solana: pumpswap only
-  const minLiq  = Math.round(strategy.liquidityMin);
-  const minMcap = Math.round(strategy.mcapMin);
-  return (
-    `https://dexscreener.com/?rankBy=trendingScoreH6&order=desc` +
-    `&chainIds=${network}${dexPart}` +
-    `&minLiq=${minLiq}&minMarketCap=${minMcap}&profile=0`
-  );
+  if (network === "robinhood") return RH_SCREENER_URL;
+  return LARGE_CAP_STRATEGIES.has(strategy.id) ? SOL_LARGE_URL : SOL_SMALL_URL;
 }
 
 /** Parse raw DexScreener pair objects (returned by /api/screener) into ScanResult[] */
@@ -308,10 +321,22 @@ function SignalCard({ token, strategy, onBuy }: {
 function StrategyPanel({ strategy, tokens, loading, onBuy }: {
   strategy: Strategy; tokens: ScanResult[]; loading: boolean; onBuy: (t: ScanResult) => void;
 }) {
+  // Loose filter: mcap range + liq + change1h/24h bands only.
+  // Does NOT gate on aiScore / volSpikeMin / requireBuyAiSignal — those are
+  // for auto-trading. Here we show everything in the strategy's market range,
+  // sorted by AI score so the best candidates appear first.
   const matched = tokens
-    .filter(t => tokenMatchesStrategy(t, strategy))
+    .filter(t => {
+      const mcap = t.marketCap;
+      if (!mcap || mcap < strategy.mcapMin || mcap > strategy.mcapMax) return false;
+      if (t.liquidity < strategy.liquidityMin) return false;
+      if (t.change1h < strategy.change1hMin || t.change1h > strategy.change1hMax) return false;
+      if (t.change24h < strategy.change24hMin || t.change24h > strategy.change24hMax) return false;
+      return true;
+    })
     .sort((a, b) => scoreTokenForStrategy(b, strategy) - scoreTokenForStrategy(a, strategy))
-    .slice(0, 30);
+    .slice(0, 50);
+  const buyCount = matched.filter(t => tokenMatchesStrategy(t, strategy)).length;
   const rc = RISK_COLOR[strategy.riskLevel];
 
   return (
@@ -369,7 +394,10 @@ function StrategyPanel({ strategy, tokens, loading, onBuy }: {
       ) : (
         <>
           <div style={{ color: "rgba(255,255,255,0.22)", fontSize: 9, letterSpacing: "0.08em", marginBottom: 12 }}>
-            {matched.length} СИГНАЛ{matched.length === 1 ? "" : matched.length < 5 ? "А" : "ОВ"} · СОРТИРОВКА: SCORE ↓
+            {matched.length} ТОКЕН{matched.length === 1 ? "" : matched.length < 5 ? "А" : "ОВ"} В ДИАПАЗОНЕ · SCORE ↓
+            {buyCount > 0 && (
+              <span style={{ color: "#4ADE80", marginLeft: 8 }}>· {buyCount} BUY сигнал{buyCount === 1 ? "" : buyCount < 5 ? "а" : "ов"}</span>
+            )}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(270px, 1fr))", gap: 12 }}>
             {matched.map(t => (
@@ -428,10 +456,11 @@ export default function Signals() {
     }
   }, []);
 
-  // On strategy or network change: load screener for that combination + 90s auto-refresh
+  // On strategy or network change: load screener if not already cached + 90s auto-refresh
   useEffect(() => {
     const url = getScreenerUrl(activeStrategy, network);
-    loadData(url);
+    // For Robinhood all strategies share one URL — skip fetch if already cached
+    if (!screenerCache[url]) loadData(url);
 
     if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
     refreshTimerRef.current = setInterval(() => loadData(url), 90_000);
@@ -443,11 +472,24 @@ export default function Signals() {
     navigate(`/trading?mint=${token.mint}&symbol=${encodeURIComponent(token.symbol)}&price=${token.price}`);
   };
 
+  // Loose display filter: only mcap range + liq + change1h/24h.
+  // Unlike tokenMatchesStrategy, does NOT require aiScore/volSpike/requireBuyAiSignal.
+  // This matches what the user sees in DexScreener by the same parameters.
+  // Tokens are sorted by aiScore descending; high-quality BUY signals appear first.
+  function tokenInStrategyRange(t: ScanResult, s: typeof STRATEGIES[0]): boolean {
+    const mcap = t.marketCap;
+    if (!mcap || mcap < s.mcapMin || mcap > s.mcapMax) return false;
+    if (t.liquidity < s.liquidityMin) return false;
+    if (t.change1h < s.change1hMin || t.change1h > s.change1hMax) return false;
+    if (t.change24h < s.change24hMin || t.change24h > s.change24hMax) return false;
+    return true;
+  }
+
   // Match counts per strategy — each strategy has its own screener cache entry
   const matchCounts = STRATEGIES.map((s) => {
     const url  = getScreenerUrl(s, network);
     const pool = screenerCache[url] ?? [];
-    return pool.filter(t => tokenMatchesStrategy(t, s)).length;
+    return pool.filter(t => tokenInStrategyRange(t, s)).length;
   });
   const totalSignals = matchCounts.reduce((a, b) => a + b, 0);
 
@@ -477,7 +519,7 @@ export default function Signals() {
             )}
             {!currentLoading && totalSignals > 0 && (
               <div style={{ padding: "4px 10px", borderRadius: 20, background: "rgba(74,222,128,0.10)", border: "1px solid rgba(74,222,128,0.25)", color: "#4ADE80", fontSize: 10, fontWeight: 700 }}>
-                {totalSignals} сигналов
+                {totalSignals} токенов
               </div>
             )}
             <button
@@ -583,7 +625,9 @@ export default function Signals() {
                 <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10, marginLeft: 10 }}>
                   {currentLoading
                     ? "Загрузка через браузер (~20с)…"
-                    : `${tokenCount} токенов · liq≥${fmtNum(activeStrategy.liquidityMin)} · mcap≥${fmtNum(activeStrategy.mcapMin)} · обновление каждые 90с`}
+                    : network === "robinhood"
+                      ? `${tokenCount} токенов · общий пул · фильтр на клиенте · обновление каждые 90с`
+                      : `${tokenCount} токенов · liq≥${fmtNum(activeStrategy.liquidityMin)} · mcap≥${fmtNum(activeStrategy.mcapMin)} · обновление каждые 90с`}
                 </span>
               </div>
               <button
